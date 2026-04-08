@@ -27,19 +27,32 @@ app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan('dev'));
 
-// ─── Event Handler ───────────────────────────────────────────────────────────
+// ─── Event Handlers ──────────────────────────────────────────────────────────
 //
-// Called for every CaseCreated event consumed from RabbitMQ.
-// Dispatches notifications to all channels the user has enabled
-// (in-app, SMS, email, push) via the multi-channel dispatcher.
+// Each handler is called when the corresponding event is consumed from RabbitMQ.
+// All dispatch through the multi-channel notification system (in-app, SMS, email, push).
+
+const logDispatch = (eventType, caseId, results) => {
+  const summary = results.map((r) => `${r.channel}:${r.success ? 'ok' : 'fail'}`).join(', ');
+  console.log(`[event] ${eventType} dispatched for case ${caseId} → ${summary}`);
+};
 
 const handleCaseCreated = async (event) => {
   console.log('[event] CaseCreated received:', event.id);
+  const results = await dispatchNotification('case.created', event);
+  logDispatch('CaseCreated', event.id, results);
+};
 
-  const results = await dispatchNotification(event);
+const handleCaseReported = async (event) => {
+  console.log('[event] CaseReported received:', event.id);
+  const results = await dispatchNotification('case.reported', event);
+  logDispatch('CaseReported', event.id, results);
+};
 
-  const summary = results.map((r) => `${r.channel}:${r.success ? 'ok' : 'fail'}`).join(', ');
-  console.log(`[event] Dispatched for case ${event.id} → ${summary}`);
+const handleCaseResolved = async (event) => {
+  console.log('[event] CaseResolved received:', event.id);
+  const results = await dispatchNotification('case.resolved', event);
+  logDispatch('CaseResolved', event.id, results);
 };
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -228,9 +241,13 @@ app.get('/notifications/delivery-log/:caseId', async (req, res) => {
 const start = async () => {
   await initDB();
 
-  // Connect to RabbitMQ and start consuming CaseCreated events
+  // Connect to RabbitMQ and start consuming events
   // Non-blocking — the HTTP server starts even if the broker is unreachable
-  connectAndConsume(handleCaseCreated).catch((err) => {
+  connectAndConsume({
+    onCaseCreated:  handleCaseCreated,
+    onCaseReported: handleCaseReported,
+    onCaseResolved: handleCaseResolved,
+  }).catch((err) => {
     console.warn('[RabbitMQ] Background connect failed:', err.message);
   });
 

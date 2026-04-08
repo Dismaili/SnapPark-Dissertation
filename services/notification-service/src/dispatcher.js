@@ -18,30 +18,70 @@ const ADDRESS_FIELD = {
 };
 
 /**
+ * Build message content for each event type.
+ */
+const buildMessage = {
+  'case.created': (event) => {
+    const violationLabel = event.violationConfirmed
+      ? `Violation detected: ${event.violationType} (confidence: ${(event.confidence * 100).toFixed(0)}%)`
+      : 'No violation detected in the submitted image.';
+
+    return {
+      message: `Your parking report (case ${event.id}) has been analysed. ${violationLabel}`,
+      subject: event.violationConfirmed
+        ? `Violation Detected — ${event.violationType}`
+        : 'Parking Report — No Violation Found',
+      metadata: {
+        eventType:          'case.created',
+        caseId:             event.id,
+        violationConfirmed: event.violationConfirmed,
+        violationType:      event.violationType,
+        confidence:         event.confidence,
+      },
+    };
+  },
+
+  'case.reported': (event) => ({
+    message: `Good news! Your violation report (case ${event.id}) for "${event.violationType}" has been forwarded to the local authorities. We'll notify you when there's an update.`,
+    subject: `Case Reported to Authorities — ${event.violationType}`,
+    metadata: {
+      eventType:     'case.reported',
+      caseId:        event.id,
+      violationType: event.violationType,
+      reportedAt:    event.reportedAt,
+    },
+  }),
+
+  'case.resolved': (event) => ({
+    message: `Your violation report (case ${event.id}) for "${event.violationType}" has been resolved by the authorities. Thank you for helping keep your community safe!`,
+    subject: `Case Resolved — ${event.violationType}`,
+    metadata: {
+      eventType:     'case.resolved',
+      caseId:        event.id,
+      violationType: event.violationType,
+      resolvedAt:    event.resolvedAt,
+    },
+  }),
+};
+
+/**
  * Dispatch a notification to every channel the user has enabled.
  *
  * Uses Promise.allSettled so that one failing channel does not block others.
  *
- * @param {{ id: string, userId: string, violationConfirmed: boolean, violationType: string, confidence: number }} event
+ * @param {string} eventType – "case.created", "case.reported", or "case.resolved"
+ * @param {object} event     – event payload from RabbitMQ
  * @returns {Promise<{ channel: string, success: boolean, error?: string }[]>}
  */
-export const dispatchNotification = async (event) => {
-  // 1. Build the notification message
-  const violationLabel = event.violationConfirmed
-    ? `Violation detected: ${event.violationType} (confidence: ${(event.confidence * 100).toFixed(0)}%)`
-    : 'No violation detected in the submitted image.';
+export const dispatchNotification = async (eventType, event) => {
+  // 1. Build message content for this event type
+  const builder = buildMessage[eventType];
+  if (!builder) {
+    console.error(`[dispatcher] Unknown event type: ${eventType}`);
+    return [];
+  }
 
-  const message  = `Your parking report (case ${event.id}) has been analysed. ${violationLabel}`;
-  const subject  = event.violationConfirmed
-    ? `Violation Detected — ${event.violationType}`
-    : 'Parking Report — No Violation Found';
-
-  const metadata = {
-    caseId:             event.id,
-    violationConfirmed: event.violationConfirmed,
-    violationType:      event.violationType,
-    confidence:         event.confidence,
-  };
+  const { message, subject, metadata } = builder(event);
 
   // 2. Get (or create default) preferences for the user
   let prefs = await getNotificationPreferences(event.userId);
