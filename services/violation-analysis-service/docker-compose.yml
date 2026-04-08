@@ -1,0 +1,68 @@
+version: '3.8'
+
+# SnapPark – Violation Analysis Service stack
+# Spins up the service together with its own PostgreSQL database and RabbitMQ.
+# The database is private to this service (Database-per-Service pattern).
+
+services:
+
+  # ── Case Database ────────────────────────────────────────────────────────────
+  case-db:
+    image: postgres:16-alpine
+    container_name: snappark-case-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       case_db
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"          # offset from auth-db (5432) for local development
+    volumes:
+      - case-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d case_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── RabbitMQ Message Broker ──────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: snappark-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # management UI (http://localhost:15672, guest/guest)
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ── Violation Analysis Service ───────────────────────────────────────────────
+  violation-analysis-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: snappark-violation-analysis-service
+    restart: unless-stopped
+    ports:
+      - "3002:3002"
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgres://postgres:postgres@case-db:5432/case_db
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      RABBITMQ_URL: amqp://rabbitmq:5672
+    depends_on:
+      case-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  case-db-data:
+    name: snappark-case-db-data
+  rabbitmq-data:
+    name: snappark-rabbitmq-data
