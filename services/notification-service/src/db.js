@@ -200,4 +200,19 @@ export const getDeliveryLog = async (caseId) => {
   return result.rows;
 };
 
+// ─── Unread Count ───────────────────────────────────────────────────────────
+
+/**
+ * Get the count of unread in-app notifications for a user.
+ * Used by the UI to show a notification badge.
+ */
+export const getUnreadCount = async (userId) => {
+  const result = await query(
+    `SELECT COUNT(*) as count FROM notifications
+     WHERE user_id = $1 AND channel = 'in_app' AND read_at IS NULL`,
+    [userId]
+  );
+  return Number(result.rows[0].count);
+};
+
 export default pool;

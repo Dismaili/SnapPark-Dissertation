@@ -8,7 +8,7 @@ import {
   query, initDB,
   markNotificationRead, markAllNotificationsRead,
   getNotificationPreferences, upsertNotificationPreferences,
-  getDeliveryLog,
+  getDeliveryLog, getUnreadCount,
 } from './db.js';
 import { connectAndConsume } from './rabbitmq.js';
 import { dispatchNotification } from './dispatcher.js';
@@ -174,6 +174,22 @@ app.patch('/notifications/read-all/:userId', async (req, res) => {
   } catch (err) {
     console.error('[notifications/read-all]', err.message);
     return res.status(500).json({ error: 'Failed to mark notifications as read.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * GET /notifications/unread-count/:userId
+ * Returns the count of unread in-app notifications for a user.
+ * Used by the UI to display a notification badge.
+ */
+app.get('/notifications/unread-count/:userId', async (req, res) => {
+  try {
+    const count = await getUnreadCount(req.params.userId);
+    return res.status(200).json({ userId: req.params.userId, unreadCount: count });
+  } catch (err) {
+    console.error('[unread-count]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve unread count.' });
   }
 });
 
