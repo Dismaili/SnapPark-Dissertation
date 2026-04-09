@@ -5,10 +5,11 @@ import morgan from 'morgan';
 import multer from 'multer';
 import dotenv from 'dotenv';
 
-import { query, initDB }        from './db.js';
+import { query, initDB, insertCaseImages, getCaseImages, auditLog, getAuditLog, getAuditLogByUser } from './db.js';
 import { connectRabbitMQ, publishCaseCreated, publishCaseReported, publishCaseResolved } from './rabbitmq.js';
-import { analyseImage }         from './gemini.js';
+import { analyseImage, analyseMultipleImages } from './gemini.js';
 import { validateImageQuality } from './imageValidator.js';
+import { startCleanupJob } from './cleanup.js';
 
 dotenv.config();
 
@@ -18,7 +19,8 @@ const app  = express();
 const PORT = Number(process.env.PORT || 3002);
 
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const MAX_IMAGE_BYTES    = 5 * 1024 * 1024; // 5 MB
+const MAX_IMAGE_BYTES    = 5 * 1024 * 1024;  // 5 MB per image
+const MAX_IMAGES         = 5;                 // max images per report
 
 // Multer: keep images in memory for base64 conversion before sending to Gemini
 const upload = multer({
@@ -37,7 +39,7 @@ const upload = multer({
 
 app.use(helmet());
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(morgan('dev'));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -58,79 +60,129 @@ app.get('/health', (_req, res) => {
  * POST /violations/analyze
  *
  * Accepts EITHER:
- *   1. multipart/form-data with fields: image (file), userId, email
- *      (this is what the API Gateway sends)
- *   2. JSON body with fields: image (base64 string), mimeType, userId
- *      (useful for direct testing)
+ *   1. multipart/form-data with fields: images (up to 5 files), userId, email
+ *      — also supports single "image" field for backward compatibility
+ *   2. JSON body with fields: images [{ image, mimeType }], userId
+ *      — also supports single image via { image, mimeType, userId }
  *
- * Before calling Gemini, the image is validated for quality (resolution,
+ * Before calling Gemini, each image is validated for quality (resolution,
  * brightness, sharpness). Rejected images return 422 with an explanation.
+ *
+ * Multiple images are sent to Gemini together for a combined analysis,
+ * giving higher confidence through additional evidence (FR8).
  */
-app.post('/violations/analyze', upload.single('image'), async (req, res) => {
+app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, res) => {
   try {
-    let base64Data, mimeType, userId, imageBuffer;
+    let imageEntries = []; // { buffer, base64, mimeType }
+    let userId;
 
-    if (req.file) {
-      // ── Multipart upload (from API Gateway) ──────────────────────────────
-      imageBuffer = req.file.buffer;
-      base64Data  = imageBuffer.toString('base64');
-      mimeType    = req.file.mimetype;
-      userId      = req.body.userId;
-    } else {
-      // ── JSON body (direct / testing) ─────────────────────────────────────
-      base64Data  = req.body.image;
-      mimeType    = req.body.mimeType;
-      userId      = req.body.userId;
-      if (base64Data) {
-        imageBuffer = Buffer.from(base64Data, 'base64');
-      }
+    if (req.files && req.files.length > 0) {
+      // ── Multipart upload (multiple files) ────────────────────────────────
+      userId = req.body.userId;
+      imageEntries = req.files.map((f) => ({
+        buffer:   f.buffer,
+        base64:   f.buffer.toString('base64'),
+        mimeType: f.mimetype,
+      }));
+    } else if (req.file) {
+      // ── Multipart upload (single file — backward compat) ────────────────
+      userId = req.body.userId;
+      imageEntries = [{
+        buffer:   req.file.buffer,
+        base64:   req.file.buffer.toString('base64'),
+        mimeType: req.file.mimetype,
+      }];
+    } else if (req.body.images && Array.isArray(req.body.images)) {
+      // ── JSON body (multiple images) ──────────────────────────────────────
+      userId = req.body.userId;
+      imageEntries = req.body.images.map((img) => ({
+        buffer:   Buffer.from(img.image, 'base64'),
+        base64:   img.image,
+        mimeType: img.mimeType,
+      }));
+    } else if (req.body.image) {
+      // ── JSON body (single image — backward compat) ──────────────────────
+      userId = req.body.userId;
+      imageEntries = [{
+        buffer:   Buffer.from(req.body.image, 'base64'),
+        base64:   req.body.image,
+        mimeType: req.body.mimeType,
+      }];
     }
 
     // ── Input validation ────────────────────────────────────────────────────
     if (!userId || typeof userId !== 'string') {
       return res.status(400).json({ error: 'userId is required.' });
     }
-    if (!base64Data || typeof base64Data !== 'string') {
-      return res.status(400).json({ error: 'Image is required.' });
+    if (imageEntries.length === 0) {
+      return res.status(400).json({ error: 'At least one image is required.' });
     }
-    if (!mimeType || !ALLOWED_MIME_TYPES.has(mimeType)) {
-      return res.status(400).json({
-        error:    'Invalid or missing mimeType.',
-        accepted: [...ALLOWED_MIME_TYPES],
+    if (imageEntries.length > MAX_IMAGES) {
+      return res.status(400).json({ error: `Maximum ${MAX_IMAGES} images per report.` });
+    }
+
+    // Validate each image
+    const imageDetails = [];
+    for (let i = 0; i < imageEntries.length; i++) {
+      const img = imageEntries[i];
+
+      if (!img.mimeType || !ALLOWED_MIME_TYPES.has(img.mimeType)) {
+        return res.status(400).json({
+          error:    `Image ${i + 1}: invalid or missing mimeType.`,
+          accepted: [...ALLOWED_MIME_TYPES],
+        });
+      }
+
+      const approxBytes = Math.ceil((img.base64.length * 3) / 4);
+      if (approxBytes > MAX_IMAGE_BYTES) {
+        return res.status(413).json({
+          error: `Image ${i + 1} exceeds the 5 MB limit (received ~${(approxBytes / 1024 / 1024).toFixed(2)} MB).`,
+        });
+      }
+
+      // ── Image quality pre-filter ──────────────────────────────────────
+      const qualityCheck = await validateImageQuality(img.buffer);
+      if (!qualityCheck.valid) {
+        await auditLog({
+          eventType: 'ImageQualityRejected',
+          userId,
+          payload: { imageIndex: i, reason: qualityCheck.reason },
+        });
+        return res.status(422).json({
+          error:      `Image ${i + 1}: quality check failed.`,
+          reason:     qualityCheck.reason,
+          imageIndex: i,
+          suggestion: 'Please take a new photo ensuring the scene is well-lit, in focus, and clearly shows the vehicle.',
+        });
+      }
+
+      imageDetails.push({
+        base64:     img.base64,
+        mimeType:   img.mimeType,
+        sizeBytes:  approxBytes,
+        qualityStats: qualityCheck.stats,
       });
     }
 
-    // Approximate byte size from base64 length
-    const approxBytes = Math.ceil((base64Data.length * 3) / 4);
-    if (approxBytes > MAX_IMAGE_BYTES) {
-      return res.status(413).json({
-        error: `Image exceeds the 5 MB limit (received ~${(approxBytes / 1024 / 1024).toFixed(2)} MB).`,
-      });
-    }
-
-    // ── Image quality pre-filter ────────────────────────────────────────────
-    // Checks resolution, brightness, and sharpness before calling Gemini.
-    // Saves API credits by rejecting unusable images early.
-    const qualityCheck = await validateImageQuality(imageBuffer);
-
-    if (!qualityCheck.valid) {
-      return res.status(422).json({
-        error:  'Image quality check failed.',
-        reason: qualityCheck.reason,
-        suggestion: 'Please take a new photo ensuring the scene is well-lit, in focus, and clearly shows the vehicle.',
-      });
-    }
-
-    console.log('[analyze] Image quality OK:', qualityCheck.stats);
+    console.log(`[analyze] ${imageDetails.length} image(s) passed quality check`);
 
     // ── Gemini analysis ─────────────────────────────────────────────────────
-    const analysis = await analyseImage(base64Data, mimeType);
+    let analysis;
+    if (imageDetails.length === 1) {
+      analysis = await analyseImage(imageDetails[0].base64, imageDetails[0].mimeType);
+    } else {
+      analysis = await analyseMultipleImages(
+        imageDetails.map((d) => ({ base64: d.base64, mimeType: d.mimeType }))
+      );
+    }
 
-    // ── Persist to database ─────────────────────────────────────────────────
+    // ── Persist case to database ────────────────────────────────────────────
+    const totalBytes = imageDetails.reduce((sum, d) => sum + d.sizeBytes, 0);
     const result = await query(
       `INSERT INTO cases
-         (user_id, status, violation_confirmed, violation_type, confidence, explanation, image_mime_type, image_size_bytes, completed_at)
-       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, NOW())
+         (user_id, status, violation_confirmed, violation_type, confidence, explanation,
+          image_mime_type, image_size_bytes, image_count, completed_at)
+       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, $8, NOW())
        RETURNING *`,
       [
         userId,
@@ -138,11 +190,35 @@ app.post('/violations/analyze', upload.single('image'), async (req, res) => {
         analysis.violationType,
         analysis.confidence,
         analysis.explanation,
-        mimeType,
-        approxBytes,
+        imageDetails[0].mimeType,  // primary image type
+        totalBytes,
+        imageDetails.length,
       ]
     );
     const savedCase = result.rows[0];
+
+    // ── Persist individual image records ─────────────────────────────────
+    await insertCaseImages(
+      savedCase.id,
+      imageDetails.map((d) => ({
+        mimeType:     d.mimeType,
+        sizeBytes:    d.sizeBytes,
+        qualityStats: d.qualityStats,
+      }))
+    );
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    await auditLog({
+      eventType: 'CaseCreated',
+      caseId:    savedCase.id,
+      userId:    savedCase.user_id,
+      payload: {
+        violationConfirmed: savedCase.violation_confirmed,
+        violationType:      savedCase.violation_type,
+        confidence:         savedCase.confidence,
+        imageCount:         savedCase.image_count,
+      },
+    });
 
     // ── Publish event ────────────────────────────────────────────────────────
     publishCaseCreated({
@@ -152,16 +228,17 @@ app.post('/violations/analyze', upload.single('image'), async (req, res) => {
       violationType:      savedCase.violation_type,
       confidence:         savedCase.confidence,
       explanation:        savedCase.explanation,
+      imageCount:         savedCase.image_count,
       createdAt:          savedCase.created_at,
     });
 
     return res.status(201).json({
-      caseId:    savedCase.id,
-      userId:    savedCase.user_id,
-      status:    savedCase.status,
+      caseId:     savedCase.id,
+      userId:     savedCase.user_id,
+      status:     savedCase.status,
+      imageCount: savedCase.image_count,
       analysis,
-      imageQuality: qualityCheck.stats,
-      createdAt: savedCase.created_at,
+      createdAt:  savedCase.created_at,
     });
   } catch (err) {
     console.error('[analyze]', err.message);
@@ -189,7 +266,7 @@ app.get('/violations/cases', async (_req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 /**
  * GET /violations/:id
- * Returns a single case by UUID.
+ * Returns a single case by UUID, including its images.
  *
  * The API Gateway forwards X-User-Id to enforce ownership.
  * If the header is present, only the case owner can view it.
@@ -209,7 +286,10 @@ app.get('/violations/:id', async (req, res) => {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
-    return res.status(200).json(caseRow);
+    // Include image records
+    const images = await getCaseImages(caseRow.id);
+
+    return res.status(200).json({ ...caseRow, images });
   } catch (err) {
     console.error('[violations/:id]', err.message);
     return res.status(500).json({ error: 'Failed to retrieve case.' });
@@ -226,7 +306,7 @@ app.get('/violations/:id', async (req, res) => {
 app.get('/violations/:id/status', async (req, res) => {
   try {
     const result = await query(
-      'SELECT id, user_id, status, created_at, completed_at, cancelled_at, reported_at, resolved_at FROM cases WHERE id = $1',
+      'SELECT id, user_id, status, image_count, created_at, completed_at, cancelled_at, reported_at, resolved_at FROM cases WHERE id = $1',
       [req.params.id]
     );
     if (result.rows.length === 0) {
@@ -294,6 +374,17 @@ app.patch('/violations/:id/report', async (req, res) => {
 
     const updatedCase = updated.rows[0];
 
+    // ── Audit log ────────────────────────────────────────────────────────────
+    await auditLog({
+      eventType: 'CaseReported',
+      caseId:    updatedCase.id,
+      userId:    updatedCase.user_id,
+      payload: {
+        violationType: updatedCase.violation_type,
+        reportedAt:    updatedCase.reported_at,
+      },
+    });
+
     // Publish event — notification service sends SMS/email to the user
     publishCaseReported({
       id:                 updatedCase.id,
@@ -345,6 +436,17 @@ app.patch('/violations/:id/resolve', async (req, res) => {
 
     const updatedCase = updated.rows[0];
 
+    // ── Audit log ────────────────────────────────────────────────────────────
+    await auditLog({
+      eventType: 'CaseResolved',
+      caseId:    updatedCase.id,
+      userId:    updatedCase.user_id,
+      payload: {
+        violationType: updatedCase.violation_type,
+        resolvedAt:    updatedCase.resolved_at,
+      },
+    });
+
     publishCaseResolved({
       id:                 updatedCase.id,
       userId:             updatedCase.user_id,
@@ -369,11 +471,6 @@ app.patch('/violations/:id/resolve', async (req, res) => {
 /**
  * DELETE /violations/:id
  * Cancel a case — only allowed if the case has not yet been completed.
- *
- * Since analysis is currently synchronous (the POST waits for Gemini),
- * cases arrive as "completed" immediately. This endpoint is designed for
- * future support of asynchronous analysis where a case could be pending.
- * Already-completed cases cannot be cancelled — they can only be viewed.
  */
 app.delete('/violations/:id', async (req, res) => {
   try {
@@ -404,6 +501,13 @@ app.delete('/violations/:id', async (req, res) => {
       [req.params.id]
     );
 
+    await auditLog({
+      eventType: 'CaseCancelled',
+      caseId:    req.params.id,
+      userId:    caseRow.user_id,
+      payload:   { previousStatus: caseRow.status },
+    });
+
     return res.status(200).json({
       message: 'Case cancelled successfully.',
       caseId:  req.params.id,
@@ -415,12 +519,58 @@ app.delete('/violations/:id', async (req, res) => {
   }
 });
 
+// ─── Audit Log Endpoints ─────────────────────────────────────────────────────
+
+/**
+ * GET /violations/:id/audit
+ * Returns the full audit trail for a case, oldest first.
+ * Supports NFR6 — legal accountability and tamper-proof history.
+ */
+app.get('/violations/:id/audit', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM cases WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Case not found.' });
+    }
+
+    const requestingUser = req.headers['x-user-id'];
+    if (requestingUser && result.rows[0].user_id !== requestingUser) {
+      return res.status(403).json({ error: 'You do not have access to this case.' });
+    }
+
+    const events = await getAuditLog(req.params.id);
+    return res.status(200).json({ caseId: req.params.id, events, count: events.length });
+  } catch (err) {
+    console.error('[audit]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve audit log.' });
+  }
+});
+
+/**
+ * GET /violations/audit/user/:userId
+ * Returns all audit events for a specific user.
+ */
+app.get('/violations/audit/user/:userId', async (req, res) => {
+  try {
+    const limit  = Math.min(Number(req.query.limit) || 50, 200);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const events = await getAuditLogByUser(req.params.userId, limit, offset);
+    return res.status(200).json({ userId: req.params.userId, events, count: events.length });
+  } catch (err) {
+    console.error('[audit/user]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve audit log.' });
+  }
+});
+
 // ─── Multer Error Handler ────────────────────────────────────────────────────
 
 app.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: 'Image too large. Maximum size is 5 MB.' });
+      return res.status(413).json({ error: 'Image too large. Maximum size is 5 MB per image.' });
+    }
+    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({ error: `Maximum ${MAX_IMAGES} images per report.` });
     }
     return res.status(400).json({ error: err.message });
   }
@@ -435,6 +585,9 @@ app.use((err, _req, res, _next) => {
 
 const start = async () => {
   await initDB();
+
+  // Start the auto-cleanup job for stale pending cases (FR7)
+  startCleanupJob();
 
   // RabbitMQ connection is non-blocking — service starts even if broker is down
   connectRabbitMQ().catch((err) => {
