@@ -249,17 +249,98 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
 // ─────────────────────────────────────────────────────────────────────────────
 /**
  * GET /violations/cases
- * Returns all stored cases, newest first.
+ * Returns cases with filtering, sorting and pagination.
+ *
+ * Query params:
+ *   - userId  (optional): filter by user
+ *   - status  (optional): filter by status (completed, reported_to_authority, resolved, cancelled)
+ *   - from    (optional): ISO-8601 date — cases created after this
+ *   - to      (optional): ISO-8601 date — cases created before this
+ *   - limit   (optional): max results (default 50, max 200)
+ *   - offset  (optional): pagination offset (default 0)
  */
-app.get('/violations/cases', async (_req, res) => {
+app.get('/violations/cases', async (req, res) => {
   try {
+    const { userId, status, from, to, limit = '50', offset = '0' } = req.query;
+    const maxLimit = Math.min(Number(limit) || 50, 200);
+    const skip     = Math.max(Number(offset) || 0, 0);
+
+    const conditions = [];
+    const params     = [];
+    let paramIndex   = 1;
+
+    if (userId) {
+      conditions.push(`user_id = $${paramIndex++}`);
+      params.push(userId);
+    }
+    if (status) {
+      conditions.push(`status = $${paramIndex++}`);
+      params.push(status);
+    }
+    if (from) {
+      conditions.push(`created_at >= $${paramIndex++}`);
+      params.push(from);
+    }
+    if (to) {
+      conditions.push(`created_at <= $${paramIndex++}`);
+      params.push(to);
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Get total count for pagination metadata
+    const countResult = await query(`SELECT COUNT(*) as total FROM cases ${where}`, params);
+    const total = Number(countResult.rows[0].total);
+
+    // Get paginated results
     const result = await query(
-      'SELECT * FROM cases ORDER BY created_at DESC'
+      `SELECT * FROM cases ${where} ORDER BY created_at DESC LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
+      [...params, maxLimit, skip]
     );
-    return res.status(200).json({ cases: result.rows, total: result.rowCount });
+
+    return res.status(200).json({
+      cases:  result.rows,
+      count:  result.rowCount,
+      total,
+      limit:  maxLimit,
+      offset: skip,
+    });
   } catch (err) {
     console.error('[cases]', err.message);
     return res.status(500).json({ error: 'Failed to retrieve cases.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * GET /violations/stats/:userId
+ * Returns summary statistics for a user's cases.
+ * Powers the user dashboard without loading all case data.
+ */
+app.get('/violations/stats/:userId', async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT
+         COUNT(*)                                              AS total_cases,
+         COUNT(*) FILTER (WHERE violation_confirmed = true)    AS violations_confirmed,
+         COUNT(*) FILTER (WHERE violation_confirmed = false)   AS violations_not_confirmed,
+         COUNT(*) FILTER (WHERE status = 'completed')          AS status_completed,
+         COUNT(*) FILTER (WHERE status = 'reported_to_authority') AS status_reported,
+         COUNT(*) FILTER (WHERE status = 'resolved')           AS status_resolved,
+         COUNT(*) FILTER (WHERE status = 'cancelled')          AS status_cancelled,
+         ROUND(AVG(confidence)::numeric, 4)                    AS avg_confidence
+       FROM cases
+       WHERE user_id = $1`,
+      [req.params.userId]
+    );
+
+    return res.status(200).json({
+      userId: req.params.userId,
+      ...result.rows[0],
+    });
+  } catch (err) {
+    console.error('[stats]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve stats.' });
   }
 });
 
