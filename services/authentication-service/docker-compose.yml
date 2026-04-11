@@ -1,0 +1,61 @@
+version: '3.8'
+
+# SnapPark – Authentication Service stack
+# Spins up the service together with its dedicated PostgreSQL database.
+# Following the Database-per-Service pattern, this database is private
+# to the Authentication Service; no other service connects to it.
+
+services:
+
+  # ── User / Auth Database ────────────────────────────────────────────────────
+  auth-db:
+    image: postgres:16-alpine
+    container_name: snappark-auth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       auth_db
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"          # exposed for local development only
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d auth_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── Authentication Service ───────────────────────────────────────────────────
+  authentication-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: snappark-auth-service
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+
+      # Database — points to the sibling container above
+      DB_HOST:     auth-db
+      DB_PORT:     5432
+      DB_NAME:     auth_db
+      DB_USER:     postgres
+      DB_PASSWORD: postgres
+
+      # JWT — override these with strong secrets in production
+      JWT_SECRET:          change-this-in-production
+      JWT_REFRESH_SECRET:  change-this-refresh-in-production
+      TOKEN_EXPIRY:        15m
+      REFRESH_TOKEN_EXPIRY: 7d
+
+      PASSWORD_SALT_ROUNDS: 10
+    depends_on:
+      auth-db:
+        condition: service_healthy
+
+volumes:
+  auth-db-data:
+    name: snappark-auth-db-data

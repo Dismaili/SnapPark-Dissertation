@@ -59,6 +59,10 @@ SnapPark employs a **microservices architecture** aligned with the Cloud Continu
 4. **Messaging Layer**: Event broker (RabbitMQ)
 5. **Data Layer**: Distributed databases per service
 
+## Quick Start
+
+See [PROJECT_ROADMAP.md](PROJECT_ROADMAP.md) for development phases and setup instructions.
+
 ## Documentation
 
 - [Literature Review](docs/literature-review.md) - Academic foundations
