@@ -1,0 +1,24 @@
+# Ingress routing external traffic to the API gateway. Requires an ingress
+# controller (e.g. nginx-ingress) installed in the cluster. The hostname is
+# a placeholder — override for staging/production before applying.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: snappark-ingress
+  namespace: snappark
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.snappark.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 80

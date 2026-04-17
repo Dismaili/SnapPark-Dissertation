@@ -30,3 +30,4 @@ tmp/
 *.pem
 .env.production
 secrets/
+deployment/kubernetes/secrets.yaml
