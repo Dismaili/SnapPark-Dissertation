@@ -1,0 +1,1428 @@
+openapi: 3.0.3
+
+info:
+  title: SnapPark API
+  version: 1.0.0
+  description: |
+    Public HTTP API for the SnapPark parking violation management platform.
+
+    The platform is composed of three microservices (`authentication-service`,
+    `violation-analysis-service`, `notification-service`) fronted by an
+    `api-gateway`. Clients should only contact the gateway directly;
+    service-to-service calls are internal and not intended for external use.
+
+    **Authentication model.** All protected routes require a Bearer JWT access
+    token obtained from `POST /auth/login` or `POST /auth/register`. Access
+    tokens expire after 15 minutes and must be refreshed via
+    `POST /auth/refresh` using the long-lived (7 day) refresh token.
+
+    **Gateway coverage.** The gateway currently proxies the auth routes plus
+    a subset of violation routes (`analyze`, `GET :id`, `GET :id/status`,
+    `DELETE :id`). The remaining violation routes and the entire notification
+    API are exposed by the services directly — they will be proxied by the
+    gateway before the frontend is built. Endpoints in this spec are tagged
+    accordingly with `x-gateway-exposed: true | false`.
+  contact:
+    name: SnapPark Dissertation Project
+    url: https://github.com/Dismaili/SnapPark-Dissertation
+
+servers:
+  - url: http://localhost:3000
+    description: API Gateway (local development)
+  - url: https://api.snappark.local
+    description: API Gateway (Kubernetes ingress)
+  - url: http://localhost:3001
+    description: Authentication Service (direct — internal only)
+  - url: http://localhost:3002
+    description: Violation Analysis Service (direct — internal only)
+  - url: http://localhost:3004
+    description: Notification Service (direct — internal only)
+
+tags:
+  - name: Health
+    description: Liveness and readiness probes.
+  - name: Authentication
+    description: User registration, login, token refresh and logout.
+  - name: Violations
+    description: Parking violation case lifecycle — analyze, retrieve, report, resolve, cancel.
+  - name: Notifications
+    description: In-app notifications, preferences and delivery logs.
+  - name: Audit
+    description: Tamper-evident case history (NFR6).
+
+# ─── Security ─────────────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived access token. Obtain via `/auth/login` or `/auth/register`.
+
+  # ─── Schemas ─────────────────────────────────────────────────────────────
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: "Invalid credentials."
+
+    HealthStatus:
+      type: object
+      required: [service, status, timestamp]
+      properties:
+        service:
+          type: string
+          example: api-gateway
+        status:
+          type: string
+          example: ok
+        timestamp:
+          type: string
+          format: date-time
+
+    # ─── Auth ─────────────────────────────────────────────────────────
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 8
+          format: password
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken:
+          type: string
+
+    LogoutRequest:
+      type: object
+      properties:
+        refreshToken:
+          type: string
+
+    User:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+
+    AuthSuccessResponse:
+      type: object
+      required: [user, token, refreshToken]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: string
+          description: Short-lived JWT access token (15 min).
+        refreshToken:
+          type: string
+          description: Long-lived JWT refresh token (7 days).
+
+    RefreshResponse:
+      type: object
+      required: [token, refreshToken]
+      properties:
+        token:
+          type: string
+        refreshToken:
+          type: string
+
+    # ─── Violations ───────────────────────────────────────────────────
+
+    ViolationStatus:
+      type: string
+      enum:
+        - pending
+        - completed
+        - reported_to_authority
+        - resolved
+        - cancelled
+
+    AnalysisResult:
+      type: object
+      properties:
+        violationConfirmed:
+          type: boolean
+        violationType:
+          type: string
+          nullable: true
+          example: DOUBLE_PARKING
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          example: 0.87
+        explanation:
+          type: string
+
+    CaseImage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+          format: uuid
+        mime_type:
+          type: string
+          example: image/jpeg
+        size_bytes:
+          type: integer
+        quality_stats:
+          type: object
+          additionalProperties: true
+
+    Case:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ViolationStatus'
+        violation_confirmed:
+          type: boolean
+        violation_type:
+          type: string
+          nullable: true
+        confidence:
+          type: number
+          format: float
+          nullable: true
+        explanation:
+          type: string
+          nullable: true
+        image_mime_type:
+          type: string
+        image_size_bytes:
+          type: integer
+        image_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+        reported_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        images:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseImage'
+
+    CaseList:
+      type: object
+      required: [cases, count, total, limit, offset]
+      properties:
+        cases:
+          type: array
+          items:
+            $ref: '#/components/schemas/Case'
+        count:
+          type: integer
+          description: Number of cases in the current page.
+        total:
+          type: integer
+          description: Total cases matching the filter.
+        limit:
+          type: integer
+        offset:
+          type: integer
+
+    CaseAnalyzeResponse:
+      type: object
+      required: [caseId, userId, status, imageCount, analysis, createdAt]
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ViolationStatus'
+        imageCount:
+          type: integer
+        analysis:
+          $ref: '#/components/schemas/AnalysisResult'
+        createdAt:
+          type: string
+          format: date-time
+
+    CaseStatusResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ViolationStatus'
+        image_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        cancelled_at:
+          type: string
+          format: date-time
+          nullable: true
+        reported_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CaseStats:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        total_cases:
+          type: integer
+        violations_confirmed:
+          type: integer
+        violations_not_confirmed:
+          type: integer
+        status_completed:
+          type: integer
+        status_reported:
+          type: integer
+        status_resolved:
+          type: integer
+        status_cancelled:
+          type: integer
+        avg_confidence:
+          type: number
+          format: float
+          nullable: true
+
+    # ─── Audit ────────────────────────────────────────────────────────
+
+    AuditEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          example: CaseCreated
+        case_id:
+          type: string
+          format: uuid
+          nullable: true
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+
+    AuditTrail:
+      type: object
+      properties:
+        caseId:
+          type: string
+          format: uuid
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        count:
+          type: integer
+
+    UserAuditTrail:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEvent'
+        count:
+          type: integer
+
+    # ─── Notifications ────────────────────────────────────────────────
+
+    Notification:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_type:
+          type: string
+          example: case.created
+        title:
+          type: string
+        message:
+          type: string
+        read:
+          type: boolean
+        read_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    NotificationList:
+      type: object
+      required: [notifications, count]
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+        count:
+          type: integer
+
+    NotificationPreferences:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        in_app:
+          type: boolean
+        sms:
+          type: boolean
+        email:
+          type: boolean
+        push:
+          type: boolean
+        phone:
+          type: string
+          nullable: true
+        email_addr:
+          type: string
+          format: email
+          nullable: true
+        fcm_token:
+          type: string
+          nullable: true
+
+    NotificationPreferencesUpdate:
+      type: object
+      properties:
+        inApp:
+          type: boolean
+        sms:
+          type: boolean
+        email:
+          type: boolean
+        push:
+          type: boolean
+        phone:
+          type: string
+          nullable: true
+        emailAddr:
+          type: string
+          format: email
+          nullable: true
+        fcmToken:
+          type: string
+          nullable: true
+
+    DeliveryLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [in_app, sms, email, push]
+        success:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    DeliveryLogResponse:
+      type: object
+      required: [logs, count]
+      properties:
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeliveryLogEntry'
+        count:
+          type: integer
+
+  # ─── Reusable responses ────────────────────────────────────────────────
+
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Authenticated user does not own the target resource.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Missing or malformed request body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Request conflicts with current resource state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooManyRequests:
+      description: Rate limit exceeded (100 requests per 15 minutes, configurable).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServerError:
+      description: Unexpected server-side failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATHS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+paths:
+
+  # ─── Health ───────────────────────────────────────────────────────
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      description: Returns 200 when the service is up. Used by Kubernetes probes and the API gateway.
+      security: []
+      x-gateway-exposed: true
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+  # ─── Authentication ───────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      tags: [Authentication]
+      summary: Register a new user
+      security: []
+      x-gateway-exposed: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User created and tokens issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Email already registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Authenticate an existing user
+      security: []
+      x-gateway-exposed: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Credentials valid; tokens issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthSuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate refresh token for a fresh access + refresh pair
+      security: []
+      x-gateway-exposed: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: New access + refresh tokens issued. Old refresh token revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RefreshResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke a refresh token
+      description: Client should discard both the access and refresh tokens on success.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: true
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '200':
+          description: Logout succeeded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logged out successfully.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/verify:
+    post:
+      tags: [Authentication]
+      summary: Validate an access token (internal)
+      description: |
+        Called by the API gateway on every protected request. Not intended for
+        direct client use and is not proxied through the gateway.
+      security: []
+      x-gateway-exposed: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+      parameters:
+        - in: header
+          name: Authorization
+          schema:
+            type: string
+          description: Optional `Bearer <token>` as an alternative to the request body.
+      responses:
+        '200':
+          description: Token is valid.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  payload:
+                    type: object
+                    properties:
+                      sub:
+                        type: string
+                        format: uuid
+                      email:
+                        type: string
+                        format: email
+                      iat:
+                        type: integer
+                      exp:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Token is invalid or the user no longer exists.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+
+  # ─── Violations ───────────────────────────────────────────────────
+
+  /violations/analyze:
+    post:
+      tags: [Violations]
+      summary: Submit one or more images for violation analysis
+      description: |
+        Accepts multipart/form-data with up to 5 image files under the
+        `images` field (or a single `image` field for backward compatibility).
+        Each image must be JPEG, PNG or WebP and ≤ 5 MB.
+
+        Pipeline:
+        1. Quality pre-filter (resolution, brightness, sharpness).
+        2. Multi-image analysis via Google Gemini.
+        3. Case persisted with status `completed` and a `CaseCreated`
+           event published to RabbitMQ for downstream notification.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: true
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [images]
+              properties:
+                images:
+                  type: array
+                  maxItems: 5
+                  items:
+                    type: string
+                    format: binary
+                image:
+                  type: string
+                  format: binary
+                  description: Single-image fallback accepted by the gateway.
+      responses:
+        '201':
+          description: Analysis complete and case created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseAnalyzeResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: Image exceeds the size limit (10 MB at gateway, 5 MB per image at service).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Image failed the quality pre-filter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  reason:
+                    type: string
+                    example: Image is too dark — brightness 18 below minimum 30.
+                  imageIndex:
+                    type: integer
+                  suggestion:
+                    type: string
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/cases:
+    get:
+      tags: [Violations]
+      summary: List cases with filtering and pagination
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: query
+          name: userId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/ViolationStatus'
+        - in: query
+          name: from
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: to
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of cases.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseList'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/stats/{userId}:
+    get:
+      tags: [Violations]
+      summary: Summary statistics for a user
+      description: Aggregated counts per status plus average confidence. Used by the user dashboard.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Stats for the user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseStats'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      tags: [Violations]
+      summary: Retrieve a case by id
+      description: |
+        When called through the gateway, the `X-User-Id` header is injected
+        from the JWT and ownership is enforced (403 if the caller is not the
+        owner).
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: true
+      responses:
+        '200':
+          description: Case details including images.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    delete:
+      tags: [Violations]
+      summary: Cancel a case before it completes
+      description: Cases that have already completed cannot be cancelled — report or resolve instead.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: true
+      responses:
+        '200':
+          description: Case cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Case cancelled successfully.
+                  caseId:
+                    type: string
+                    format: uuid
+                  status:
+                    $ref: '#/components/schemas/ViolationStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/{id}/status:
+    get:
+      tags: [Violations]
+      summary: Lightweight status poll for a case
+      description: Returns only status-related fields. Preferred over `GET /violations/{id}` for client polling.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: true
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Case status snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/{id}/report:
+    patch:
+      tags: [Violations]
+      summary: Report a confirmed violation to authorities
+      description: |
+        Allowed only when the case has status `completed` and
+        `violation_confirmed = true`. Transitions to `reported_to_authority`
+        and publishes `CaseReported` so the user is notified that their
+        report has been forwarded.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Case reported.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  caseId:
+                    type: string
+                    format: uuid
+                  status:
+                    $ref: '#/components/schemas/ViolationStatus'
+                  reportedAt:
+                    type: string
+                    format: date-time
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/{id}/resolve:
+    patch:
+      tags: [Violations]
+      summary: Mark a reported case as resolved
+      description: Allowed only from status `reported_to_authority`. Publishes `CaseResolved`.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Case resolved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  caseId:
+                    type: string
+                    format: uuid
+                  status:
+                    $ref: '#/components/schemas/ViolationStatus'
+                  resolvedAt:
+                    type: string
+                    format: date-time
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # ─── Audit (tagged separately for clarity) ────────────────────────
+
+  /violations/{id}/audit:
+    get:
+      tags: [Audit]
+      summary: Retrieve the audit trail for a case
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Ordered list of audit events for this case.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditTrail'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /violations/audit/user/{userId}:
+    get:
+      tags: [Audit]
+      summary: Retrieve all audit events for a user
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Ordered list of audit events for this user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAuditTrail'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # ─── Notifications ────────────────────────────────────────────────
+
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: query
+          name: userId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Paginated list of notifications.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/{id}:
+    get:
+      tags: [Notifications]
+      summary: Retrieve a single notification
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notification found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/{id}/read:
+    patch:
+      tags: [Notifications]
+      summary: Mark a notification as read
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notification marked as read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notification'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/read-all/{userId}:
+    patch:
+      tags: [Notifications]
+      summary: Mark all of a user's notifications as read
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Number of notifications marked as read.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  markedRead:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/unread-count/{userId}:
+    get:
+      tags: [Notifications]
+      summary: Count unread in-app notifications
+      description: Used by the UI to display a badge on the notifications icon.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Unread count.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  unreadCount:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/case/{caseId}:
+    get:
+      tags: [Notifications]
+      summary: Retrieve all notifications for a case
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Notifications ordered newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/preferences/{userId}:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema:
+          type: string
+          format: uuid
+
+    get:
+      tags: [Notifications]
+      summary: Retrieve a user's notification preferences
+      description: Returns platform defaults (`in_app = true`, other channels off) if none are stored.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      responses:
+        '200':
+          description: Preferences.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    put:
+      tags: [Notifications]
+      summary: Create or update notification preferences
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesUpdate'
+      responses:
+        '200':
+          description: Preferences saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /notifications/delivery-log/{caseId}:
+    get:
+      tags: [Notifications]
+      summary: Retrieve delivery log entries for a case
+      description: Useful for debugging which channels successfully delivered a notification.
+      security:
+        - bearerAuth: []
+      x-gateway-exposed: false
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Delivery log entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryLogResponse'
+        '500':
+          $ref: '#/components/responses/ServerError'
