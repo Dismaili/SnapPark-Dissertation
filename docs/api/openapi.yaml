@@ -16,12 +16,12 @@ info:
     tokens expire after 15 minutes and must be refreshed via
     `POST /auth/refresh` using the long-lived (7 day) refresh token.
 
-    **Gateway coverage.** The gateway currently proxies the auth routes plus
-    a subset of violation routes (`analyze`, `GET :id`, `GET :id/status`,
-    `DELETE :id`). The remaining violation routes and the entire notification
-    API are exposed by the services directly — they will be proxied by the
-    gateway before the frontend is built. Endpoints in this spec are tagged
-    accordingly with `x-gateway-exposed: true | false`.
+    **Gateway coverage.** The gateway proxies every public endpoint described
+    in this spec — authentication, violations, and notifications — so clients
+    only ever need to talk to the gateway's base URL. The one exception is
+    `/auth/verify`, which is an internal service-to-service call used by the
+    gateway itself and is therefore not proxied. Endpoints are tagged with
+    `x-gateway-exposed: true | false` for clarity.
   contact:
     name: SnapPark Dissertation Project
     url: https://github.com/Dismaili/SnapPark-Dissertation
@@ -866,7 +866,7 @@ paths:
       summary: List cases with filtering and pagination
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: query
           name: userId
@@ -915,7 +915,7 @@ paths:
       description: Aggregated counts per status plus average confidence. Used by the user dashboard.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: userId
@@ -1044,7 +1044,7 @@ paths:
         report has been forwarded.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: id
@@ -1086,7 +1086,7 @@ paths:
       description: Allowed only from status `reported_to_authority`. Publishes `CaseResolved`.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: id
@@ -1127,7 +1127,7 @@ paths:
       summary: Retrieve the audit trail for a case
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: id
@@ -1155,7 +1155,7 @@ paths:
       summary: Retrieve all audit events for a user
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: userId
@@ -1192,7 +1192,7 @@ paths:
       summary: List notifications
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: query
           name: userId
@@ -1226,7 +1226,7 @@ paths:
       summary: Retrieve a single notification
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: id
@@ -1252,7 +1252,7 @@ paths:
       summary: Mark a notification as read
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: id
@@ -1278,7 +1278,7 @@ paths:
       summary: Mark all of a user's notifications as read
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: userId
@@ -1306,7 +1306,7 @@ paths:
       description: Used by the UI to display a badge on the notifications icon.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: userId
@@ -1336,7 +1336,7 @@ paths:
       summary: Retrieve all notifications for a case
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: caseId
@@ -1369,7 +1369,7 @@ paths:
       description: Returns platform defaults (`in_app = true`, other channels off) if none are stored.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       responses:
         '200':
           description: Preferences.
@@ -1385,7 +1385,7 @@ paths:
       summary: Create or update notification preferences
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       requestBody:
         required: true
         content:
@@ -1409,7 +1409,7 @@ paths:
       description: Useful for debugging which channels successfully delivered a notification.
       security:
         - bearerAuth: []
-      x-gateway-exposed: false
+      x-gateway-exposed: true
       parameters:
         - in: path
           name: caseId
