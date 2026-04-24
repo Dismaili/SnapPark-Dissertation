@@ -15,8 +15,9 @@ dotenv.config();
 const app  = express();
 const PORT = Number(process.env.PORT || 3000);
 
-const AUTH_SERVICE_URL      = process.env.AUTH_SERVICE_URL      || 'http://authentication-service:3001';
-const VIOLATION_SERVICE_URL = process.env.VIOLATION_SERVICE_URL || 'http://violation-analysis-service:3002';
+const AUTH_SERVICE_URL         = process.env.AUTH_SERVICE_URL         || 'http://authentication-service:3001';
+const VIOLATION_SERVICE_URL    = process.env.VIOLATION_SERVICE_URL    || 'http://violation-analysis-service:3002';
+const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || 'http://notification-service:3004';
 
 // Multer: keep uploaded images in memory so we can forward them to the
 // Violation Analysis Service without writing to disk.
@@ -95,8 +96,9 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-// ─── Helper: proxy a JSON request ─────────────────────────────────────────────
+// ─── Proxy Helpers ────────────────────────────────────────────────────────────
 
+// Simple passthrough for public JSON endpoints (no user context needed).
 const proxyJSON = (serviceUrl) => async (req, res) => {
   try {
     const response = await axios({
@@ -111,6 +113,47 @@ const proxyJSON = (serviceUrl) => async (req, res) => {
     const body   = err.response?.data   || { error: 'Downstream service unavailable.' };
     return res.status(status).json(body);
   }
+};
+
+// Proxies an authenticated request to a downstream service, forwarding the
+// caller's user id as `X-User-Id` so the service can enforce ownership.
+// `resolveUrl` may be a string or a function that builds the URL from the
+// request (useful when path parameters must be substituted).
+const proxyAuthenticated = (resolveUrl, { timeout = 10000 } = {}) => async (req, res) => {
+  try {
+    const url = typeof resolveUrl === 'function' ? resolveUrl(req) : resolveUrl;
+    const hasBody = !['GET', 'DELETE', 'HEAD'].includes(req.method);
+    const response = await axios({
+      method:  req.method,
+      url,
+      data:    hasBody ? req.body : undefined,
+      params:  req.query,
+      headers: { 'X-User-Id': req.user.sub },
+      timeout,
+    });
+    return res.status(response.status).json(response.data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    const body   = err.response?.data   || { error: 'Downstream service unavailable.' };
+    return res.status(status).json(body);
+  }
+};
+
+// Ensures the `:userId` path parameter matches the authenticated user.
+// Prevents one user from reading or mutating another user's data through
+// endpoints that take a user id in the URL.
+const requireOwnUserId = (req, res, next) => {
+  if (req.params.userId !== req.user.sub) {
+    return res.status(403).json({ error: 'Forbidden: cannot access another user\'s data.' });
+  }
+  next();
+};
+
+// Overrides any caller-supplied `?userId=` with the authenticated user so
+// collection endpoints cannot leak cross-user data.
+const enforceQueryUserId = (req, _res, next) => {
+  req.query.userId = req.user.sub;
+  next();
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -143,11 +186,15 @@ app.post('/auth/logout', authenticate, proxyJSON(`${AUTH_SERVICE_URL}/auth/logou
 // Every violation route goes through `authenticate` first.  If the token is
 // invalid the request is rejected and never reaches the Violation Analysis
 // Service.
+//
+// NOTE: Route order matters — Express matches registration order, so literal
+// paths (e.g. `/violations/cases`) MUST be declared before parametric ones
+// (e.g. `/violations/:caseId`) to avoid the parameter swallowing them.
 
 /**
  * POST /violations/analyze
  *
- * The client uploads an image as multipart/form-data.
+ * The client uploads one or more images as multipart/form-data.
  * The gateway:
  *   1. Verifies the token (authenticate middleware)
  *   2. Validates the file (multer fileFilter)
@@ -194,67 +241,187 @@ app.post('/violations/analyze', authenticate, upload.single('image'), async (req
 });
 
 /**
+ * GET /violations/cases
+ * List cases for the authenticated user. Supports optional filters:
+ *   ?status=completed  ?from=...  ?to=...  ?limit=50  ?offset=0
+ * The `userId` query param is always overridden with the caller's id —
+ * users can only list their own cases through the gateway.
+ */
+app.get('/violations/cases',
+  authenticate,
+  enforceQueryUserId,
+  proxyAuthenticated(`${VIOLATION_SERVICE_URL}/violations/cases`),
+);
+
+/**
+ * GET /violations/stats/:userId
+ * Aggregated statistics (total cases, confirmed, etc.) for a user.
+ * Callers may only request their own stats.
+ */
+app.get('/violations/stats/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/stats/${req.params.userId}`),
+);
+
+/**
+ * GET /violations/audit/user/:userId
+ * Full audit trail of all case events for a user.
+ * Callers may only request their own audit trail.
+ */
+app.get('/violations/audit/user/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/audit/user/${req.params.userId}`),
+);
+
+/**
  * GET /violations/:caseId
  * Retrieve the full details of a case.
  */
-app.get('/violations/:caseId', authenticate, async (req, res) => {
-  try {
-    const response = await axios.get(
-      `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}`,
-      {
-        headers: { 'X-User-Id': req.user.sub },
-        timeout: 10000,
-      },
-    );
-    return res.status(response.status).json(response.data);
-  } catch (err) {
-    const status = err.response?.status || 502;
-    const body   = err.response?.data   || { error: 'Violation analysis service unavailable.' };
-    return res.status(status).json(body);
-  }
-});
+app.get('/violations/:caseId',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}`),
+);
 
 /**
  * GET /violations/:caseId/status
  * Check the current status of a case analysis.
  */
-app.get('/violations/:caseId/status', authenticate, async (req, res) => {
-  try {
-    const response = await axios.get(
-      `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/status`,
-      {
-        headers: { 'X-User-Id': req.user.sub },
-        timeout: 10000,
-      },
-    );
-    return res.status(response.status).json(response.data);
-  } catch (err) {
-    const status = err.response?.status || 502;
-    const body   = err.response?.data   || { error: 'Violation analysis service unavailable.' };
-    return res.status(status).json(body);
-  }
-});
+app.get('/violations/:caseId/status',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/status`),
+);
+
+/**
+ * GET /violations/:caseId/audit
+ * Per-case audit trail — every state change recorded for a single case.
+ */
+app.get('/violations/:caseId/audit',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/audit`),
+);
+
+/**
+ * PATCH /violations/:caseId/report
+ * Move a completed, confirmed violation into `reported_to_authority` status.
+ * Publishes a `case.reported` event consumed by the Notification Service.
+ */
+app.patch('/violations/:caseId/report',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/report`),
+);
+
+/**
+ * PATCH /violations/:caseId/resolve
+ * Mark a reported case as resolved. Publishes a `case.resolved` event.
+ */
+app.patch('/violations/:caseId/resolve',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/resolve`),
+);
 
 /**
  * DELETE /violations/:caseId
  * Cancel a case before analysis completes.
  */
-app.delete('/violations/:caseId', authenticate, async (req, res) => {
-  try {
-    const response = await axios.delete(
-      `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}`,
-      {
-        headers: { 'X-User-Id': req.user.sub },
-        timeout: 10000,
-      },
-    );
-    return res.status(response.status).json(response.data);
-  } catch (err) {
-    const status = err.response?.status || 502;
-    const body   = err.response?.data   || { error: 'Violation analysis service unavailable.' };
-    return res.status(status).json(body);
-  }
-});
+app.delete('/violations/:caseId',
+  authenticate,
+  proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}`),
+);
+
+// ─── Protected Notification Routes ───────────────────────────────────────────
+//
+// All notification endpoints require authentication. As with the violation
+// routes, literal paths are registered before parametric ones so Express
+// matches the more specific pattern first.
+
+/**
+ * GET /notifications
+ * List the authenticated user's notifications (newest first).
+ * Supports ?limit=50&offset=0. `userId` is always overridden.
+ */
+app.get('/notifications',
+  authenticate,
+  enforceQueryUserId,
+  proxyAuthenticated(`${NOTIFICATION_SERVICE_URL}/notifications`),
+);
+
+/**
+ * GET /notifications/case/:caseId
+ * All notifications generated for a single case.
+ */
+app.get('/notifications/case/:caseId',
+  authenticate,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/case/${req.params.caseId}`),
+);
+
+/**
+ * PATCH /notifications/read-all/:userId
+ * Mark every notification for a user as read.
+ */
+app.patch('/notifications/read-all/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/read-all/${req.params.userId}`),
+);
+
+/**
+ * GET /notifications/unread-count/:userId
+ * Number of unread notifications — intended for UI badges.
+ */
+app.get('/notifications/unread-count/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/unread-count/${req.params.userId}`),
+);
+
+/**
+ * GET /notifications/preferences/:userId
+ * Fetch the user's channel preferences (in-app, SMS, email, push).
+ */
+app.get('/notifications/preferences/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/preferences/${req.params.userId}`),
+);
+
+/**
+ * PUT /notifications/preferences/:userId
+ * Create or update the user's channel preferences.
+ */
+app.put('/notifications/preferences/:userId',
+  authenticate,
+  requireOwnUserId,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/preferences/${req.params.userId}`),
+);
+
+/**
+ * GET /notifications/delivery-log/:caseId
+ * Per-case delivery attempts across all channels (debug / audit).
+ */
+app.get('/notifications/delivery-log/:caseId',
+  authenticate,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/delivery-log/${req.params.caseId}`),
+);
+
+/**
+ * GET /notifications/:notificationId
+ * Retrieve a single notification by its id.
+ */
+app.get('/notifications/:notificationId',
+  authenticate,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/${req.params.notificationId}`),
+);
+
+/**
+ * PATCH /notifications/:notificationId/read
+ * Mark a single notification as read.
+ */
+app.patch('/notifications/:notificationId/read',
+  authenticate,
+  proxyAuthenticated((req) => `${NOTIFICATION_SERVICE_URL}/notifications/${req.params.notificationId}/read`),
+);
 
 // ─── Multer Error Handler ─────────────────────────────────────────────────────
 // Catches file upload errors (wrong type, too large) and returns a clean JSON
@@ -284,6 +451,7 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`[api-gateway] Listening on port ${PORT}`);
-  console.log(`[api-gateway] Auth service:      ${AUTH_SERVICE_URL}`);
-  console.log(`[api-gateway] Violation service:  ${VIOLATION_SERVICE_URL}`);
+  console.log(`[api-gateway] Auth service:         ${AUTH_SERVICE_URL}`);
+  console.log(`[api-gateway] Violation service:    ${VIOLATION_SERVICE_URL}`);
+  console.log(`[api-gateway] Notification service: ${NOTIFICATION_SERVICE_URL}`);
 });
