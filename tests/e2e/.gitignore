@@ -1,0 +1,9 @@
+# Don't commit images submitted as test input — they may contain personal data.
+fixtures/*.jpg
+fixtures/*.jpeg
+fixtures/*.png
+fixtures/*.webp
+
+# Don't commit demo run artefacts — they contain JWTs and live API responses.
+artifacts/*
+!artifacts/.gitkeep
