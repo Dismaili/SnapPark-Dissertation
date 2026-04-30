@@ -4,7 +4,10 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+// Model name is configurable so we can roll forward when Google deprecates a SKU.
+// `gemini-1.5-flash` (the original choice) was retired in 2025.
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite';
+const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
 const SINGLE_IMAGE_PROMPT = `You are an expert traffic warden and parking enforcement officer.
 Analyse the provided image and determine whether an illegal parking violation is occurring.

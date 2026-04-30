@@ -209,9 +209,10 @@ app.post('/violations/analyze', authenticate, upload.single('image'), async (req
       });
     }
 
-    // Build a new multipart form to forward the image to the Violation Service
+    // Build a new multipart form to forward the image to the Violation Service.
+    // The downstream service uses multer.array('images'); send under that name.
     const form = new FormData();
-    form.append('image', req.file.buffer, {
+    form.append('images', req.file.buffer, {
       filename: req.file.originalname,
       contentType: req.file.mimetype,
     });
