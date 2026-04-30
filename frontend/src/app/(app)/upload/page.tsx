@@ -1,0 +1,246 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { ApiError, apiUploadImage } from "@/lib/api";
+import type { AnalyzeResponse } from "@/lib/types";
+import { PageHeader } from "@/components/ui/PageHeader";
+import {
+  Camera,
+  Loader2,
+  ImageIcon,
+  X,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react";
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const ACCEPTED = ["image/jpeg", "image/png", "image/webp"];
+
+export default function UploadPage() {
+  const router = useRouter();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<AnalyzeResponse["case"] | null>(null);
+
+  useEffect(() => {
+    if (!file) {
+      setPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreview(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  const onPick = (f: File | null) => {
+    setError(null);
+    setResult(null);
+    if (!f) {
+      setFile(null);
+      return;
+    }
+    if (!ACCEPTED.includes(f.type)) {
+      setError(`Unsupported file type. Use JPEG, PNG, or WebP.`);
+      return;
+    }
+    if (f.size > MAX_BYTES) {
+      setError("File is too large. Maximum size is 10 MB.");
+      return;
+    }
+    setFile(f);
+  };
+
+  const onSubmit = async () => {
+    if (!file) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const data = await apiUploadImage<AnalyzeResponse>(
+        "/violations/analyze",
+        file,
+      );
+      setResult(data.case);
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(
+          err.message ||
+            `Analysis failed (${err.status}). Please try a different image.`,
+        );
+      } else {
+        setError("Analysis failed. Please try again.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title="Submit a new report"
+        description="Take a clear photo of the parked vehicle. We'll pre-check it for quality before sending it to the AI."
+      />
+
+      <div className="grid gap-6 p-8 lg:grid-cols-2">
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-900">1. Upload image</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            JPEG, PNG, or WebP. Max 10 MB.
+          </p>
+
+          <div
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              e.preventDefault();
+              onPick(e.dataTransfer.files?.[0] || null);
+            }}
+            className="mt-4 flex aspect-video cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center transition hover:border-emerald-400 hover:bg-emerald-50/40"
+          >
+            {preview ? (
+              <div className="relative h-full w-full">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={preview}
+                  alt="Upload preview"
+                  className="h-full w-full rounded-md object-contain"
+                />
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setFile(null);
+                  }}
+                  className="absolute right-2 top-2 rounded-full bg-white/90 p-1 text-slate-700 shadow hover:bg-white"
+                  aria-label="Remove image"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center gap-2 text-slate-500">
+                <ImageIcon className="h-8 w-8" />
+                <p className="text-sm font-medium">
+                  Click to select or drop an image here
+                </p>
+              </div>
+            )}
+            <input
+              ref={inputRef}
+              type="file"
+              accept={ACCEPTED.join(",")}
+              className="hidden"
+              onChange={(e) => onPick(e.target.files?.[0] || null)}
+            />
+          </div>
+
+          {error && (
+            <div className="mt-4 flex items-start gap-2 rounded-md bg-red-50 p-3 text-sm text-red-700">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <button
+            onClick={onSubmit}
+            disabled={!file || submitting}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Analysing image…
+              </>
+            ) : (
+              <>
+                <Camera className="h-4 w-4" />
+                Analyse with Gemini
+              </>
+            )}
+          </button>
+        </section>
+
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-sm font-semibold text-slate-900">2. AI verdict</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            The result appears here once analysis completes (≈ 2–5 seconds).
+          </p>
+
+          {!result && !submitting && (
+            <div className="mt-6 flex h-64 items-center justify-center rounded-md bg-slate-50 text-sm text-slate-500">
+              No analysis yet.
+            </div>
+          )}
+
+          {submitting && (
+            <div className="mt-6 flex h-64 items-center justify-center rounded-md bg-slate-50 text-sm text-slate-500">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Quality-checking and asking Gemini…
+            </div>
+          )}
+
+          {result && (
+            <div className="mt-6 space-y-4">
+              <div
+                className={`rounded-md p-4 ${
+                  result.violation_confirmed
+                    ? "bg-red-50 text-red-900"
+                    : "bg-emerald-50 text-emerald-900"
+                }`}
+              >
+                <div className="flex items-center gap-2 font-semibold">
+                  {result.violation_confirmed ? (
+                    <AlertTriangle className="h-5 w-5" />
+                  ) : (
+                    <CheckCircle2 className="h-5 w-5" />
+                  )}
+                  {result.violation_confirmed
+                    ? `Violation detected: ${result.violation_type}`
+                    : "No violation detected"}
+                </div>
+                {result.confidence != null && (
+                  <p className="mt-1 text-xs opacity-80">
+                    Confidence: {Math.round(result.confidence * 100)}%
+                  </p>
+                )}
+              </div>
+
+              {result.explanation && (
+                <div>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Explanation
+                  </h3>
+                  <p className="mt-1 text-sm text-slate-700">
+                    {result.explanation}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  onClick={() => router.push(`/cases/${result.id}`)}
+                  className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+                >
+                  View case
+                </button>
+                <button
+                  onClick={() => {
+                    setFile(null);
+                    setResult(null);
+                  }}
+                  className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100"
+                >
+                  Submit another
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+    </>
+  );
+}
