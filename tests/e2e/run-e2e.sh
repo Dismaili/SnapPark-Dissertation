@@ -216,12 +216,15 @@ if [[ "$HTTP_STATUS" != "200" && "$HTTP_STATUS" != "201" ]]; then
   FAIL "analyze: expected 200/201, got $HTTP_STATUS"
 fi
 
-CASE_ID=$(jq -r '.case.id // empty' "$RUN_DIR/03-analyze-response.json")
-[[ -n "$CASE_ID" ]] || FAIL "analyze: response did not contain case.id"
+# Support both response shapes:
+#   { caseId, analysis: { violationConfirmed, ... } }  (violation service direct)
+#   { case: { id, violation_confirmed, ... } }          (older gateway wrapper)
+CASE_ID=$(jq -r '.caseId // .case.id // empty' "$RUN_DIR/03-analyze-response.json")
+[[ -n "$CASE_ID" ]] || FAIL "analyze: response did not contain caseId"
 
-VIOLATION_CONFIRMED=$(jq -r '.case.violation_confirmed' "$RUN_DIR/03-analyze-response.json")
-CONFIDENCE=$(jq -r '.case.confidence // 0' "$RUN_DIR/03-analyze-response.json")
-EXPLANATION=$(jq -r '.case.explanation // ""' "$RUN_DIR/03-analyze-response.json")
+VIOLATION_CONFIRMED=$(jq -r '.analysis.violationConfirmed // .case.violation_confirmed // false' "$RUN_DIR/03-analyze-response.json")
+CONFIDENCE=$(jq -r '.analysis.confidence // .case.confidence // 0' "$RUN_DIR/03-analyze-response.json")
+EXPLANATION=$(jq -r '.analysis.explanation // .case.explanation // ""' "$RUN_DIR/03-analyze-response.json")
 
 PASS "Case created  (id=${CASE_ID:0:8}…, violation=$VIOLATION_CONFIRMED, confidence=$CONFIDENCE, ${ELAPSED}s)"
 INFO "Explanation: ${EXPLANATION:0:120}…"
