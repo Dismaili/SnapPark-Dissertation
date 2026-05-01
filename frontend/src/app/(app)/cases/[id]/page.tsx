@@ -36,10 +36,13 @@ export default function CaseDetailPage() {
     queryFn: () => apiFetch<Case>(`/violations/${id}`),
   });
 
-  const { data: audit } = useQuery({
+  const { data: auditRaw } = useQuery({
     queryKey: ["case-audit", id],
-    queryFn: () => apiFetch<AuditEntry[]>(`/violations/${id}/audit`),
+    queryFn: () => apiFetch<{ events: AuditEntry[] } | AuditEntry[]>(`/violations/${id}/audit`),
   });
+  const audit: AuditEntry[] = Array.isArray(auditRaw)
+    ? auditRaw
+    : (auditRaw as { events: AuditEntry[] })?.events ?? [];
 
   const reportMutation = useMutation({
     mutationFn: () =>
