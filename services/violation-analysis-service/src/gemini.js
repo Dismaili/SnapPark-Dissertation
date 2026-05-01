@@ -6,7 +6,7 @@ dotenv.config();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Model name is configurable so we can roll forward when Google deprecates a SKU.
 // `gemini-1.5-flash` (the original choice) was retired in 2025.
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
 const SINGLE_IMAGE_PROMPT = `You are an expert traffic warden and parking enforcement officer.
@@ -118,7 +118,7 @@ export const analyseImage = async (base64Data, mimeType) => {
     return parseResponse(result.response.text().trim());
   } catch (err) {
     if (DEMO_MODE && isGeminiApiError(err)) {
-      console.warn('[gemini] Quota/auth error — returning demo verdict. Set GEMINI_DEMO_MODE=false to disable.');
+      console.warn('[gemini] API error — returning demo verdict:', err.message?.slice(0, 200));
       return mockVerdict(base64Data);
     }
     throw err;
