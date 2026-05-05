@@ -19,6 +19,7 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import Link from "next/link";
+import { tokenStore } from "@/lib/auth";
 
 type AuditEntry = {
   id: string;
@@ -32,6 +33,8 @@ export default function CaseDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const qc = useQueryClient();
+
+  const isAdmin = tokenStore.getUser()?.role === "admin";
 
   const { data: caseData, isLoading, error } = useQuery({
     queryKey: ["case", id],
@@ -156,35 +159,38 @@ export default function CaseDetailPage() {
             </p>
           </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-900">
-              Audit trail
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Every state change recorded for this case.
-            </p>
-            <ol className="mt-4 space-y-3">
-              {(audit || []).length === 0 && (
-                <li className="text-sm text-slate-500">No audit events.</li>
-              )}
-              {(audit || []).map((e) => (
-                <li
-                  key={e.id}
-                  className="flex items-start gap-3 rounded-md bg-slate-50 p-3 text-sm"
-                >
-                  <span className="mt-0.5 inline-block h-2 w-2 rounded-full bg-emerald-500" />
-                  <div className="flex-1">
-                    <div className="font-medium text-slate-900">
-                      {e.event_type}
+          {/* Audit trail — admin only */}
+          {isAdmin && (
+            <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Audit trail
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Every state change recorded for this case.
+              </p>
+              <ol className="mt-4 space-y-3">
+                {(audit || []).length === 0 && (
+                  <li className="text-sm text-slate-500">No audit events.</li>
+                )}
+                {(audit || []).map((e) => (
+                  <li
+                    key={e.id}
+                    className="flex items-start gap-3 rounded-md bg-slate-50 p-3 text-sm"
+                  >
+                    <span className="mt-0.5 inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                    <div className="flex-1">
+                      <div className="font-medium text-slate-900">
+                        {e.event_type}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {formatDate(e.created_at)}
+                      </div>
                     </div>
-                    <div className="text-xs text-slate-500">
-                      {formatDate(e.created_at)}
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ol>
-          </section>
+                  </li>
+                ))}
+              </ol>
+            </section>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -205,16 +211,22 @@ export default function CaseDetailPage() {
           <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-sm font-semibold text-slate-900">Actions</h2>
 
-            {c.status === "completed" && c.violation_confirmed && (
+            {/* Citizen view — violation confirmed but pending admin action */}
+            {!isAdmin && c.status === "completed" && c.violation_confirmed && (
+              <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700 ring-1 ring-inset ring-amber-200">
+                Violation confirmed. An administrator will review and forward this case to the authorities.
+              </p>
+            )}
+
+            {/* "Report to Authorities" — admin only */}
+            {isAdmin && c.status === "completed" && c.violation_confirmed && (
               <button
                 onClick={() => reportMutation.mutate()}
                 disabled={reportMutation.isPending}
                 className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
               >
                 <Send className="h-4 w-4" />
-                {reportMutation.isPending
-                  ? "Reporting…"
-                  : "Report to authority"}
+                {reportMutation.isPending ? "Reporting…" : "Report to authority"}
               </button>
             )}
 
