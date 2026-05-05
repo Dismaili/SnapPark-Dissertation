@@ -24,7 +24,7 @@ export default function UploadPage() {
   const [preview, setPreview] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<AnalyzeResponse["case"] | null>(null);
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -63,7 +63,7 @@ export default function UploadPage() {
         "/violations/analyze",
         file,
       );
-      setResult(data.case);
+      setResult(data);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(
@@ -85,7 +85,7 @@ export default function UploadPage() {
         description="Take a clear photo of the parked vehicle. We'll pre-check it for quality before sending it to the AI."
       />
 
-      <div className="grid gap-6 p-8 lg:grid-cols-2">
+      <div className="grid gap-6 p-4 sm:p-6 md:p-8 lg:grid-cols-2">
         <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-sm font-semibold text-slate-900">1. Upload image</h2>
           <p className="mt-1 text-xs text-slate-500">
@@ -158,7 +158,7 @@ export default function UploadPage() {
             ) : (
               <>
                 <Camera className="h-4 w-4" />
-                Analyse with Gemini
+                Analyse with SnapPark
               </>
             )}
           </button>
@@ -179,7 +179,7 @@ export default function UploadPage() {
           {submitting && (
             <div className="mt-6 flex h-64 items-center justify-center rounded-md bg-slate-50 text-sm text-slate-500">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Quality-checking and asking Gemini…
+              Quality-checking and analysing your photo…
             </div>
           )}
 
@@ -187,42 +187,42 @@ export default function UploadPage() {
             <div className="mt-6 space-y-4">
               <div
                 className={`rounded-md p-4 ${
-                  result.violation_confirmed
+                  result.analysis.violationConfirmed
                     ? "bg-red-50 text-red-900"
                     : "bg-emerald-50 text-emerald-900"
                 }`}
               >
                 <div className="flex items-center gap-2 font-semibold">
-                  {result.violation_confirmed ? (
+                  {result.analysis.violationConfirmed ? (
                     <AlertTriangle className="h-5 w-5" />
                   ) : (
                     <CheckCircle2 className="h-5 w-5" />
                   )}
-                  {result.violation_confirmed
-                    ? `Violation detected: ${result.violation_type}`
+                  {result.analysis.violationConfirmed
+                    ? `Violation detected: ${result.analysis.violationType}`
                     : "No violation detected"}
                 </div>
-                {result.confidence != null && (
+                {result.analysis.confidence != null && (
                   <p className="mt-1 text-xs opacity-80">
-                    Confidence: {Math.round(result.confidence * 100)}%
+                    Confidence: {Math.round(result.analysis.confidence * 100)}%
                   </p>
                 )}
               </div>
 
-              {result.explanation && (
+              {result.analysis.explanation && (
                 <div>
                   <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Explanation
                   </h3>
                   <p className="mt-1 text-sm text-slate-700">
-                    {result.explanation}
+                    {result.analysis.explanation}
                   </p>
                 </div>
               )}
 
               <div className="flex gap-2 pt-2">
                 <button
-                  onClick={() => router.push(`/cases/${result.id}`)}
+                  onClick={() => router.push(`/cases/${result.caseId}`)}
                   className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700"
                 >
                   View case

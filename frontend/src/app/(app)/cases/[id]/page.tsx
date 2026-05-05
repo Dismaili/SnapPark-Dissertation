@@ -1,8 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiFetch, ApiError } from "@/lib/api";
+import { apiFetch, apiFetchBlobUrl, ApiError } from "@/lib/api";
 import type { Case } from "@/lib/types";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatusBadge } from "@/components/ui/StatusBadge";
@@ -10,6 +11,7 @@ import { formatDate, formatPercent } from "@/lib/format";
 import {
   AlertTriangle,
   CheckCircle2,
+  Image as ImageIcon,
   Loader2,
   Send,
   ShieldCheck,
@@ -72,7 +74,7 @@ export default function CaseDetailPage() {
 
   if (error || !caseData) {
     return (
-      <div className="p-8">
+      <div className="p-4 sm:p-6 md:p-8">
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
           {error instanceof ApiError && error.status === 404
             ? "Case not found."
@@ -99,8 +101,32 @@ export default function CaseDetailPage() {
         }
       />
 
-      <div className="grid gap-6 p-8 lg:grid-cols-3">
+      <div className="grid gap-6 p-4 sm:p-6 md:p-8 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
+          {/* Photo gallery — shows the image(s) the citizen submitted so the
+              AI verdict can be eyeballed against the actual evidence. */}
+          {Array.isArray(c.images) && c.images.length > 0 && (
+            <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                <ImageIcon className="h-4 w-4" />
+                Submitted photo{c.images.length > 1 ? "s" : ""}
+              </h2>
+              <p className="mt-1 text-xs text-slate-500">
+                The image{c.images.length > 1 ? "s" : ""} you uploaded for this case.
+              </p>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                {c.images.map((img) => (
+                  <CaseImage
+                    key={img.id}
+                    caseId={c.id}
+                    index={img.image_index}
+                    mime={img.image_mime_type}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+
           <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-center gap-3">
               <StatusBadge status={c.status} />
@@ -251,5 +277,70 @@ function DetailRow({
       <dt className="text-slate-500">{label}</dt>
       <dd className="text-right text-slate-900">{value}</dd>
     </div>
+  );
+}
+
+/**
+ * Authenticated image renderer.
+ *
+ * The /violations/:id/images/:index endpoint requires a bearer token, which
+ * a plain <img src> tag can't attach. We fetch the bytes via the API helper,
+ * turn them into a blob URL, and render that. Cleanup revokes the URL when
+ * the component unmounts so we don't leak object URLs.
+ */
+function CaseImage({
+  caseId,
+  index,
+  mime,
+}: {
+  caseId: string;
+  index: number;
+  mime: string;
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let revoked = false;
+    let url: string | null = null;
+    apiFetchBlobUrl(`/violations/${caseId}/images/${index}`)
+      .then((u) => {
+        if (revoked) {
+          URL.revokeObjectURL(u);
+          return;
+        }
+        url = u;
+        setSrc(u);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Failed to load image.");
+      });
+    return () => {
+      revoked = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [caseId, index]);
+
+  if (error) {
+    return (
+      <div className="flex aspect-video items-center justify-center rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+        {error}
+      </div>
+    );
+  }
+  if (!src) {
+    return (
+      <div className="flex aspect-video items-center justify-center rounded-md bg-slate-100 text-xs text-slate-400">
+        <Loader2 className="h-4 w-4 animate-spin" />
+      </div>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={`Case evidence #${index + 1} (${mime})`}
+      className="aspect-video w-full rounded-md border border-slate-200 bg-slate-50 object-contain"
+    />
   );
 }

@@ -30,9 +30,10 @@ export default function CasesPage() {
   if (statusFilter) params.set("status", statusFilter);
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["cases", page, statusFilter],
+    queryKey: ["cases", user?.id, page, statusFilter],
     queryFn: () =>
       apiFetch<CaseListResponse>(`/violations/cases?${params.toString()}`),
+    enabled: !!user,
   });
 
   if (!user) return null;
@@ -53,14 +54,14 @@ export default function CasesPage() {
         }
       />
 
-      <div className="p-8">
+      <div className="p-4 sm:p-6 md:p-8">
         {stats && (
           <div className="mb-8 grid grid-cols-2 gap-3 sm:grid-cols-5">
-            <StatCard label="Total" value={stats.total} />
-            <StatCard label="Analysed" value={stats.completed} />
-            <StatCard label="Confirmed" value={stats.confirmed} />
-            <StatCard label="Reported" value={stats.reported} />
-            <StatCard label="Resolved" value={stats.resolved} />
+            <StatCard label="Total" value={Number(stats.total_cases)} />
+            <StatCard label="Analysed" value={Number(stats.status_completed)} />
+            <StatCard label="Confirmed" value={Number(stats.violations_confirmed)} />
+            <StatCard label="Reported" value={Number(stats.status_reported)} />
+            <StatCard label="Resolved" value={Number(stats.status_resolved)} />
           </div>
         )}
 

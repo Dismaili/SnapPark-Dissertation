@@ -65,7 +65,7 @@ export default function NotificationsPage() {
         }
       />
 
-      <div className="p-8">
+      <div className="p-4 sm:p-6 md:p-8">
         {isLoading && (
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-8 text-sm text-slate-500">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
@@ -101,7 +101,7 @@ export default function NotificationsPage() {
               <div className="flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    {n.notification_type.replace(/_/g, " ")}
+                    {(n.notification_type ?? "notification").replace(/_/g, " ")}
                   </span>
                   <span className="text-xs text-slate-400">
                     {formatDate(n.created_at)}
