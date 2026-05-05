@@ -116,10 +116,11 @@ const proxyJSON = (serviceUrl) => async (req, res) => {
 };
 
 // Proxies an authenticated request to a downstream service, forwarding the
-// caller's user id as `X-User-Id` so the service can enforce ownership.
+// caller's user id as `X-User-Id` and role as `X-User-Role` so the service
+// can enforce ownership while still allowing admins through.
 // `resolveUrl` may be a string or a function that builds the URL from the
 // request (useful when path parameters must be substituted).
-const proxyAuthenticated = (resolveUrl, { timeout = 10000 } = {}) => async (req, res) => {
+const proxyAuthenticated = (resolveUrl, { timeout = 10000, responseType } = {}) => async (req, res) => {
   try {
     const url = typeof resolveUrl === 'function' ? resolveUrl(req) : resolveUrl;
     const hasBody = !['GET', 'DELETE', 'HEAD'].includes(req.method);
@@ -128,9 +129,18 @@ const proxyAuthenticated = (resolveUrl, { timeout = 10000 } = {}) => async (req,
       url,
       data:    hasBody ? req.body : undefined,
       params:  req.query,
-      headers: { 'X-User-Id': req.user.sub },
+      headers: {
+        'X-User-Id':   req.user.sub,
+        'X-User-Role': req.user.role || 'citizen',
+      },
       timeout,
+      responseType,
     });
+    if (responseType === 'arraybuffer') {
+      const contentType = response.headers['content-type'] || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      return res.status(response.status).send(Buffer.from(response.data));
+    }
     return res.status(response.status).json(response.data);
   } catch (err) {
     const status = err.response?.status || 502;
@@ -141,8 +151,10 @@ const proxyAuthenticated = (resolveUrl, { timeout = 10000 } = {}) => async (req,
 
 // Ensures the `:userId` path parameter matches the authenticated user.
 // Prevents one user from reading or mutating another user's data through
-// endpoints that take a user id in the URL.
+// endpoints that take a user id in the URL. Admins bypass this restriction
+// so they can inspect any user's data through the same endpoint.
 const requireOwnUserId = (req, res, next) => {
+  if (req.user.role === 'admin') return next();
   if (req.params.userId !== req.user.sub) {
     return res.status(403).json({ error: 'Forbidden: cannot access another user\'s data.' });
   }
@@ -150,9 +162,12 @@ const requireOwnUserId = (req, res, next) => {
 };
 
 // Overrides any caller-supplied `?userId=` with the authenticated user so
-// collection endpoints cannot leak cross-user data.
+// collection endpoints cannot leak cross-user data. Admins keep their
+// requested filter (or no filter) so they can see every user's cases.
 const enforceQueryUserId = (req, _res, next) => {
-  req.query.userId = req.user.sub;
+  if (req.user.role !== 'admin') {
+    req.query.userId = req.user.sub;
+  }
   next();
 };
 
@@ -177,9 +192,31 @@ app.post('/auth/register', proxyJSON(`${AUTH_SERVICE_URL}/auth/register`));
 app.post('/auth/login',    proxyJSON(`${AUTH_SERVICE_URL}/auth/login`));
 app.post('/auth/refresh',  proxyJSON(`${AUTH_SERVICE_URL}/auth/refresh`));
 
+// Email verification — public (token in URL, no Bearer needed)
+app.get('/auth/verify-email', async (req, res) => {
+  try {
+    const response = await axios.get(`${AUTH_SERVICE_URL}/auth/verify-email`, {
+      params: req.query,
+      maxRedirects: 0,
+      validateStatus: (s) => s < 400,
+    });
+    // Forward the redirect from the auth service to the browser
+    if (response.status === 302 || response.headers.location) {
+      return res.redirect(response.headers.location);
+    }
+    return res.status(response.status).json(response.data);
+  } catch (err) {
+    if (err.response?.headers?.location) return res.redirect(err.response.headers.location);
+    return res.status(502).json({ error: 'Verification service unavailable.' });
+  }
+});
+
 // ─── Protected Auth Routes ───────────────────────────────────────────────────
 
-app.post('/auth/logout', authenticate, proxyJSON(`${AUTH_SERVICE_URL}/auth/logout`));
+app.post('/auth/logout',               authenticate, proxyJSON(`${AUTH_SERVICE_URL}/auth/logout`));
+app.post('/auth/resend-verification',  authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/resend-verification`));
+app.patch('/auth/profile',             authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/profile`));
+app.patch('/auth/password',            authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/password`));
 
 // ─── Protected Violation Routes ──────────────────────────────────────────────
 //
@@ -274,6 +311,20 @@ app.get('/violations/audit/user/:userId',
   authenticate,
   requireOwnUserId,
   proxyAuthenticated((req) => `${VIOLATION_SERVICE_URL}/violations/audit/user/${req.params.userId}`),
+);
+
+/**
+ * GET /violations/:caseId/images/:index
+ * Stream a single image attached to a case (binary).
+ * Declared before the generic /:caseId route so Express picks the more
+ * specific pattern first.
+ */
+app.get('/violations/:caseId/images/:index',
+  authenticate,
+  proxyAuthenticated(
+    (req) => `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/images/${req.params.index}`,
+    { responseType: 'arraybuffer' },
+  ),
 );
 
 /**
