@@ -9,6 +9,8 @@ import { AuthShell } from "@/components/ui/AuthShell";
 
 export default function RegisterPage() {
   const router = useRouter();
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -17,6 +19,11 @@ export default function RegisterPage() {
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    if (!firstName.trim() || !lastName.trim()) {
+      setError("Please enter your first and last name.");
+      return;
+    }
 
     if (password.length < 8) {
       setError("Password must be at least 8 characters.");
@@ -28,7 +35,12 @@ export default function RegisterPage() {
       const data = await apiFetch<AuthResponse>("/auth/register", {
         method: "POST",
         auth: false,
-        body: { email, password },
+        body: {
+          email,
+          password,
+          firstName: firstName.trim(),
+          lastName:  lastName.trim(),
+        },
       });
       tokenStore.set(data.token, data.refreshToken, data.user);
       router.replace("/dashboard");
@@ -48,6 +60,24 @@ export default function RegisterPage() {
       altCta="Sign in"
     >
       <form onSubmit={onSubmit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <Field
+            label="First name"
+            type="text"
+            value={firstName}
+            onChange={setFirstName}
+            autoComplete="given-name"
+            required
+          />
+          <Field
+            label="Last name"
+            type="text"
+            value={lastName}
+            onChange={setLastName}
+            autoComplete="family-name"
+            required
+          />
+        </div>
         <Field
           label="Email"
           type="email"

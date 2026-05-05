@@ -89,3 +89,24 @@ const safeJsonParse = (text: string) => {
     return text;
   }
 };
+
+/**
+ * Fetch a binary asset (e.g. a case image) with the bearer token attached
+ * and return an object URL the browser can render directly.
+ *
+ * Callers MUST eventually call `URL.revokeObjectURL` on the returned value
+ * to release the underlying memory; useEffect cleanup is the typical place.
+ */
+export async function apiFetchBlobUrl(path: string): Promise<string> {
+  const headers = new Headers();
+  const token = tokenStore.getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const res = await fetch(`${API_URL}${path}`, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text, `Image fetch failed (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}

@@ -11,6 +11,12 @@ export type Case = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  images?: Array<{
+    id: string;
+    image_index: number;
+    image_mime_type: string;
+    image_size_bytes: number;
+  }>;
 };
 
 export type CaseListResponse = {
@@ -21,11 +27,14 @@ export type CaseListResponse = {
 };
 
 export type UserStats = {
-  total: number;
-  completed: number;
-  confirmed: number;
-  reported: number;
-  resolved: number;
+  total_cases: number;
+  violations_confirmed: number;
+  violations_not_confirmed: number;
+  status_completed: number;
+  status_reported: number;
+  status_resolved: number;
+  status_cancelled: number;
+  avg_confidence: string | null;
 };
 
 export type Notification = {
@@ -51,11 +60,37 @@ export type NotificationPreferences = {
 };
 
 export type AnalyzeResponse = {
-  case: Case;
+  caseId: string;
+  userId: string;
+  status: string;
+  imageCount: number;
+  analysis: {
+    violationConfirmed: boolean;
+    violationType: string | null;
+    confidence: number;
+    explanation: string;
+  };
+  createdAt: string;
 };
 
 export type AuthResponse = {
-  user: { id: string; email: string };
+  user: {
+    id: string;
+    email: string;
+    role?: "citizen" | "admin";
+    firstName?: string | null;
+    lastName?: string | null;
+    emailVerified?: boolean;
+  };
   token: string;
   refreshToken: string;
+};
+
+export type CaseImage = {
+  id: string;
+  case_id: string;
+  image_index: number;
+  image_mime_type: string;
+  image_size_bytes: number;
+  created_at: string;
 };

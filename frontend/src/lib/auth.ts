@@ -7,6 +7,10 @@ const USER_KEY = "snappark.user";
 export type AuthUser = {
   id: string;
   email: string;
+  role?: "citizen" | "admin";
+  firstName?: string | null;
+  lastName?: string | null;
+  emailVerified?: boolean;
 };
 
 export const tokenStore = {
