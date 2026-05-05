@@ -75,13 +75,24 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
   try {
     let imageEntries = []; // { buffer, base64, mimeType }
     let userId;
+    let userEmail;       // forwarded to the notification service via the case events
+    let licensePlate;    // optional — captured from the upload form
+    let latitude;        // optional — from map pin drop
+    let longitude;
+    let locationLabel;   // optional — human-readable address from reverse-geocode
 
-    let userEmail; // forwarded to the notification service via the case events
+    const extractMeta = (body) => {
+      userId       = body.userId;
+      userEmail    = body.email;
+      licensePlate = typeof body.licensePlate === 'string' ? body.licensePlate.trim().toUpperCase() || null : null;
+      latitude     = body.latitude  ? parseFloat(body.latitude)  : null;
+      longitude    = body.longitude ? parseFloat(body.longitude) : null;
+      locationLabel = typeof body.locationLabel === 'string' ? body.locationLabel.trim() || null : null;
+    };
 
     if (req.files && req.files.length > 0) {
       // ── Multipart upload (multiple files) ────────────────────────────────
-      userId = req.body.userId;
-      userEmail = req.body.email;
+      extractMeta(req.body);
       imageEntries = req.files.map((f) => ({
         buffer:   f.buffer,
         base64:   f.buffer.toString('base64'),
@@ -89,8 +100,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }));
     } else if (req.file) {
       // ── Multipart upload (single file — backward compat) ────────────────
-      userId = req.body.userId;
-      userEmail = req.body.email;
+      extractMeta(req.body);
       imageEntries = [{
         buffer:   req.file.buffer,
         base64:   req.file.buffer.toString('base64'),
@@ -98,8 +108,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }];
     } else if (req.body.images && Array.isArray(req.body.images)) {
       // ── JSON body (multiple images) ──────────────────────────────────────
-      userId = req.body.userId;
-      userEmail = req.body.email;
+      extractMeta(req.body);
       imageEntries = req.body.images.map((img) => ({
         buffer:   Buffer.from(img.image, 'base64'),
         base64:   img.image,
@@ -107,8 +116,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }));
     } else if (req.body.image) {
       // ── JSON body (single image — backward compat) ──────────────────────
-      userId = req.body.userId;
-      userEmail = req.body.email;
+      extractMeta(req.body);
       imageEntries = [{
         buffer:   Buffer.from(req.body.image, 'base64'),
         base64:   req.body.image,
@@ -188,8 +196,9 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     const result = await query(
       `INSERT INTO cases
          (user_id, status, violation_confirmed, violation_type, confidence, explanation,
+          license_plate, latitude, longitude, location_label,
           image_mime_type, image_size_bytes, image_count, completed_at)
-       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, $8, NOW())
+       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        RETURNING *`,
       [
         userId,
@@ -197,6 +206,10 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
         analysis.violationType,
         analysis.confidence,
         analysis.explanation,
+        licensePlate  || null,
+        latitude      ?? null,
+        longitude     ?? null,
+        locationLabel || null,
         imageDetails[0].mimeType,  // primary image type
         totalBytes,
         imageDetails.length,
@@ -239,6 +252,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       violationType:      savedCase.violation_type,
       confidence:         savedCase.confidence,
       explanation:        savedCase.explanation,
+      licensePlate:       savedCase.license_plate,
       imageCount:         savedCase.image_count,
       createdAt:          savedCase.created_at,
     });
@@ -532,6 +546,7 @@ app.patch('/violations/:id/report', async (req, res) => {
       violationType:      updatedCase.violation_type,
       confidence:         updatedCase.confidence,
       explanation:        updatedCase.explanation,
+      licensePlate:       updatedCase.license_plate,
       reportedAt:         updatedCase.reported_at,
     });
 
@@ -591,6 +606,7 @@ app.patch('/violations/:id/resolve', async (req, res) => {
       userId:             updatedCase.user_id,
       violationConfirmed: updatedCase.violation_confirmed,
       violationType:      updatedCase.violation_type,
+      licensePlate:       updatedCase.license_plate,
       resolvedAt:         updatedCase.resolved_at,
     });
 

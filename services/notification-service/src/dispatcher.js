@@ -20,16 +20,24 @@ const ADDRESS_FIELD = {
 /**
  * Build message content for each event type.
  */
+/**
+ * Format a license plate for display.
+ * Returns " (plate: ABC-123)" if present, or "" if not.
+ */
+const plateLabel = (plate) => (plate ? ` (plate: ${plate})` : '');
+
 const buildMessage = {
   'case.created': (event) => {
     const violationLabel = event.violationConfirmed
       ? `Violation detected: ${event.violationType} (confidence: ${(event.confidence * 100).toFixed(0)}%)`
       : 'No violation detected in the submitted image.';
 
+    const plate = plateLabel(event.licensePlate);
+
     return {
-      message: `Your parking report (case ${event.id}) has been analysed. ${violationLabel}`,
+      message: `Your parking report (case ${event.id})${plate} has been analysed. ${violationLabel}`,
       subject: event.violationConfirmed
-        ? `Violation Detected — ${event.violationType}`
+        ? `Violation Detected — ${event.violationType}${plate}`
         : 'Parking Report — No Violation Found',
       metadata: {
         eventType:          'case.created',
@@ -37,31 +45,40 @@ const buildMessage = {
         violationConfirmed: event.violationConfirmed,
         violationType:      event.violationType,
         confidence:         event.confidence,
+        licensePlate:       event.licensePlate || null,
       },
     };
   },
 
-  'case.reported': (event) => ({
-    message: `Good news! Your violation report (case ${event.id}) for "${event.violationType}" has been forwarded to the local authorities. We'll notify you when there's an update.`,
-    subject: `Case Reported to Authorities — ${event.violationType}`,
-    metadata: {
-      eventType:     'case.reported',
-      caseId:        event.id,
-      violationType: event.violationType,
-      reportedAt:    event.reportedAt,
-    },
-  }),
+  'case.reported': (event) => {
+    const plate = plateLabel(event.licensePlate);
+    return {
+      message: `Good news! Your violation report (case ${event.id})${plate} for "${event.violationType}" has been forwarded to the local authorities. We'll notify you when there's an update.`,
+      subject: `Case Reported to Authorities — ${event.violationType}${plate}`,
+      metadata: {
+        eventType:     'case.reported',
+        caseId:        event.id,
+        violationType: event.violationType,
+        licensePlate:  event.licensePlate || null,
+        reportedAt:    event.reportedAt,
+      },
+    };
+  },
 
-  'case.resolved': (event) => ({
-    message: `Your violation report (case ${event.id}) for "${event.violationType}" has been resolved by the authorities. Thank you for helping keep your community safe!`,
-    subject: `Case Resolved — ${event.violationType}`,
-    metadata: {
-      eventType:     'case.resolved',
-      caseId:        event.id,
-      violationType: event.violationType,
-      resolvedAt:    event.resolvedAt,
-    },
-  }),
+  'case.resolved': (event) => {
+    const plate = plateLabel(event.licensePlate);
+    return {
+      message: `Your violation report (case ${event.id})${plate} for "${event.violationType}" has been resolved by the authorities. Thank you for helping keep your community safe!`,
+      subject: `Case Resolved — ${event.violationType}${plate}`,
+      metadata: {
+        eventType:     'case.resolved',
+        caseId:        event.id,
+        violationType: event.violationType,
+        licensePlate:  event.licensePlate || null,
+        resolvedAt:    event.resolvedAt,
+      },
+    };
+  },
 };
 
 /**

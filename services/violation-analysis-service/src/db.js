@@ -37,6 +37,10 @@ export const initDB = async () => {
       violation_type      TEXT,
       confidence          NUMERIC(5, 4),
       explanation         TEXT,
+      license_plate       TEXT,
+      latitude            NUMERIC(10, 7),
+      longitude           NUMERIC(10, 7),
+      location_label      TEXT,
       image_mime_type     TEXT,
       image_size_bytes    INTEGER,
       image_count         INTEGER NOT NULL DEFAULT 1,
@@ -111,6 +115,18 @@ export const initDB = async () => {
       END IF;
       IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'image_count') THEN
         ALTER TABLE cases ADD COLUMN image_count INTEGER NOT NULL DEFAULT 1;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'license_plate') THEN
+        ALTER TABLE cases ADD COLUMN license_plate TEXT;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'latitude') THEN
+        ALTER TABLE cases ADD COLUMN latitude NUMERIC(10, 7);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'longitude') THEN
+        ALTER TABLE cases ADD COLUMN longitude NUMERIC(10, 7);
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'cases' AND column_name = 'location_label') THEN
+        ALTER TABLE cases ADD COLUMN location_label TEXT;
       END IF;
     END
     $$;
