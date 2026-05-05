@@ -10,7 +10,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-const FROM = process.env.SMTP_FROM || 'noreply@snappark.app';
+const FROM = process.env.SMTP_FROM || 'snapparkillegalparking@gmail.com';
 const APP_URL = process.env.APP_URL || 'http://localhost:3001';
 
 /**

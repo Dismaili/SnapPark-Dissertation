@@ -142,7 +142,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-noreply@snappark.app}
+      SMTP_FROM: ${SMTP_FROM:-snapparkillegalparking@gmail.com}
     depends_on:
       postgres_auth:
         condition: service_healthy
@@ -208,7 +208,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-noreply@snappark.app}
+      SMTP_FROM: ${SMTP_FROM:-snapparkillegalparking@gmail.com}
       # Push (Firebase) — leave blank to disable
       FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH:-}
     depends_on:
