@@ -53,12 +53,25 @@ export async function apiFetch<T = unknown>(
   return data as T;
 }
 
+type UploadExtras = {
+  licensePlate?: string;
+  latitude?: number;
+  longitude?: number;
+  locationLabel?: string;
+};
+
 export async function apiUploadImage<T = unknown>(
   path: string,
   file: File,
+  extras: UploadExtras = {},
 ): Promise<T> {
   const form = new FormData();
   form.append("image", file);
+
+  if (extras.licensePlate) form.append("licensePlate", extras.licensePlate);
+  if (extras.latitude  != null) form.append("latitude",  String(extras.latitude));
+  if (extras.longitude != null) form.append("longitude", String(extras.longitude));
+  if (extras.locationLabel) form.append("locationLabel", extras.locationLabel);
 
   const headers = new Headers();
   const token = tokenStore.getToken();
