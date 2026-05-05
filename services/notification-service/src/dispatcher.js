@@ -21,24 +21,27 @@ const ADDRESS_FIELD = {
  * Build message content for each event type.
  */
 /**
- * Format a license plate for display.
- * Returns " (plate: ABC-123)" if present, or "" if not.
+ * Returns a human-friendly reference for the case.
+ * If a license plate was captured, use that ("vehicle ABC-123").
+ * Otherwise fall back to the short case ID ("case 101beb69…").
  */
-const plateLabel = (plate) => (plate ? ` (plate: ${plate})` : '');
+const caseRef = (event) =>
+  event.licensePlate
+    ? `vehicle ${event.licensePlate}`
+    : `case ${event.id.slice(0, 8)}…`;
 
 const buildMessage = {
   'case.created': (event) => {
+    const ref = caseRef(event);
     const violationLabel = event.violationConfirmed
       ? `Violation detected: ${event.violationType} (confidence: ${(event.confidence * 100).toFixed(0)}%)`
       : 'No violation detected in the submitted image.';
 
-    const plate = plateLabel(event.licensePlate);
-
     return {
-      message: `Your parking report (case ${event.id})${plate} has been analysed. ${violationLabel}`,
+      message: `Your parking report for ${ref} has been analysed. ${violationLabel}`,
       subject: event.violationConfirmed
-        ? `Violation Detected — ${event.violationType}${plate}`
-        : 'Parking Report — No Violation Found',
+        ? `Violation Detected — ${event.violationType} (${ref})`
+        : `Parking Report — No Violation Found (${ref})`,
       metadata: {
         eventType:          'case.created',
         caseId:             event.id,
@@ -51,10 +54,10 @@ const buildMessage = {
   },
 
   'case.reported': (event) => {
-    const plate = plateLabel(event.licensePlate);
+    const ref = caseRef(event);
     return {
-      message: `Good news! Your violation report (case ${event.id})${plate} for "${event.violationType}" has been forwarded to the local authorities. We'll notify you when there's an update.`,
-      subject: `Case Reported to Authorities — ${event.violationType}${plate}`,
+      message: `Good news! Your violation report for ${ref} ("${event.violationType}") has been forwarded to the local authorities. We'll notify you when there's an update.`,
+      subject: `Case Reported to Authorities — ${event.violationType} (${ref})`,
       metadata: {
         eventType:     'case.reported',
         caseId:        event.id,
@@ -66,10 +69,10 @@ const buildMessage = {
   },
 
   'case.resolved': (event) => {
-    const plate = plateLabel(event.licensePlate);
+    const ref = caseRef(event);
     return {
-      message: `Your violation report (case ${event.id})${plate} for "${event.violationType}" has been resolved by the authorities. Thank you for helping keep your community safe!`,
-      subject: `Case Resolved — ${event.violationType}${plate}`,
+      message: `Your violation report for ${ref} ("${event.violationType}") has been resolved by the authorities. Thank you for helping keep your community safe!`,
+      subject: `Case Resolved — ${event.violationType} (${ref})`,
       metadata: {
         eventType:     'case.resolved',
         caseId:        event.id,
