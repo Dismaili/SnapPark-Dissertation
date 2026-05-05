@@ -57,11 +57,22 @@ export const initDB = async () => {
       image_index      INTEGER NOT NULL DEFAULT 0,
       image_mime_type  TEXT NOT NULL,
       image_size_bytes INTEGER NOT NULL,
+      image_data       BYTEA,
       quality_stats    JSONB,
       created_at       TIMESTAMP WITH TIME ZONE DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_case_images_case_id ON case_images (case_id);
+
+    -- Backfill column for installations that pre-date image_data
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_name = 'case_images' AND column_name = 'image_data') THEN
+        ALTER TABLE case_images ADD COLUMN image_data BYTEA;
+      END IF;
+    END
+    $$;
 
     CREATE TABLE IF NOT EXISTS case_audit_log (
       id             BIGSERIAL PRIMARY KEY,
@@ -112,27 +123,53 @@ export const initDB = async () => {
 
 /**
  * Insert a record for each image submitted in a case.
+ * The raw bytes are stored in `image_data` so the frontend can later display
+ * the photo alongside the AI verdict (no S3 / object store needed for the demo).
  */
 export const insertCaseImages = async (caseId, images) => {
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
     await query(
-      `INSERT INTO case_images (case_id, image_index, image_mime_type, image_size_bytes, quality_stats)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [caseId, i, img.mimeType, img.sizeBytes, img.qualityStats ? JSON.stringify(img.qualityStats) : null]
+      `INSERT INTO case_images (case_id, image_index, image_mime_type, image_size_bytes, image_data, quality_stats)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        caseId,
+        i,
+        img.mimeType,
+        img.sizeBytes,
+        img.data || null,
+        img.qualityStats ? JSON.stringify(img.qualityStats) : null,
+      ]
     );
   }
 };
 
 /**
- * Get all images for a case, ordered by index.
+ * Get all images for a case, ordered by index — metadata only.
+ * The bytes column (`image_data`) is excluded; use `getCaseImageBytes`
+ * for the binary payload of a single image.
  */
 export const getCaseImages = async (caseId) => {
   const result = await query(
-    'SELECT * FROM case_images WHERE case_id = $1 ORDER BY image_index',
+    `SELECT id, case_id, image_index, image_mime_type, image_size_bytes, quality_stats, created_at
+     FROM case_images WHERE case_id = $1 ORDER BY image_index`,
     [caseId]
   );
   return result.rows;
+};
+
+/**
+ * Fetch the raw bytes (and mime type) for a single image of a case.
+ * Returns null if no row exists.
+ */
+export const getCaseImageBytes = async (caseId, imageIndex) => {
+  const result = await query(
+    `SELECT image_mime_type, image_data
+     FROM case_images
+     WHERE case_id = $1 AND image_index = $2`,
+    [caseId, imageIndex]
+  );
+  return result.rows[0] || null;
 };
 
 // ─── Audit Log (NFR6 — Auditability) ─────────────────────────────────────────

@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import multer from 'multer';
 import dotenv from 'dotenv';
 
-import { query, initDB, insertCaseImages, getCaseImages, auditLog, getAuditLog, getAuditLogByUser } from './db.js';
+import { query, initDB, insertCaseImages, getCaseImages, getCaseImageBytes, auditLog, getAuditLog, getAuditLogByUser } from './db.js';
 import { connectRabbitMQ, publishCaseCreated, publishCaseReported, publishCaseResolved } from './rabbitmq.js';
 import { analyseImage, analyseMultipleImages } from './gemini.js';
 import { validateImageQuality } from './imageValidator.js';
@@ -76,9 +76,12 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     let imageEntries = []; // { buffer, base64, mimeType }
     let userId;
 
+    let userEmail; // forwarded to the notification service via the case events
+
     if (req.files && req.files.length > 0) {
       // ── Multipart upload (multiple files) ────────────────────────────────
       userId = req.body.userId;
+      userEmail = req.body.email;
       imageEntries = req.files.map((f) => ({
         buffer:   f.buffer,
         base64:   f.buffer.toString('base64'),
@@ -87,6 +90,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     } else if (req.file) {
       // ── Multipart upload (single file — backward compat) ────────────────
       userId = req.body.userId;
+      userEmail = req.body.email;
       imageEntries = [{
         buffer:   req.file.buffer,
         base64:   req.file.buffer.toString('base64'),
@@ -95,6 +99,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     } else if (req.body.images && Array.isArray(req.body.images)) {
       // ── JSON body (multiple images) ──────────────────────────────────────
       userId = req.body.userId;
+      userEmail = req.body.email;
       imageEntries = req.body.images.map((img) => ({
         buffer:   Buffer.from(img.image, 'base64'),
         base64:   img.image,
@@ -103,6 +108,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     } else if (req.body.image) {
       // ── JSON body (single image — backward compat) ──────────────────────
       userId = req.body.userId;
+      userEmail = req.body.email;
       imageEntries = [{
         buffer:   Buffer.from(req.body.image, 'base64'),
         base64:   req.body.image,
@@ -157,6 +163,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }
 
       imageDetails.push({
+        buffer:     img.buffer,
         base64:     img.base64,
         mimeType:   img.mimeType,
         sizeBytes:  approxBytes,
@@ -198,11 +205,14 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     const savedCase = result.rows[0];
 
     // ── Persist individual image records ─────────────────────────────────
+    // Store the raw bytes too so the frontend can render the photo on the
+    // case detail page next to the AI verdict.
     await insertCaseImages(
       savedCase.id,
       imageDetails.map((d) => ({
         mimeType:     d.mimeType,
         sizeBytes:    d.sizeBytes,
+        data:         d.buffer,
         qualityStats: d.qualityStats,
       }))
     );
@@ -224,6 +234,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
     publishCaseCreated({
       id:                 savedCase.id,
       userId:             savedCase.user_id,
+      userEmail,                                // pre-fills email_addr in defaults
       violationConfirmed: savedCase.violation_confirmed,
       violationType:      savedCase.violation_type,
       confidence:         savedCase.confidence,
@@ -346,6 +357,50 @@ app.get('/violations/stats/:userId', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 /**
+ * GET /violations/:id/images/:index
+ * Stream the raw bytes of a single image attached to a case.
+ *
+ * MUST be declared before the generic `/violations/:id` route below,
+ * otherwise Express's first-match rule swallows it as a case id.
+ *
+ * Ownership is enforced via the X-User-Id header passed by the gateway —
+ * admins (X-User-Role: admin) bypass the check.
+ */
+app.get('/violations/:id/images/:index', async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    const index  = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) {
+      return res.status(400).json({ error: 'Invalid image index.' });
+    }
+
+    const caseRow = await query('SELECT user_id FROM cases WHERE id = $1', [caseId]);
+    if (caseRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Case not found.' });
+    }
+
+    const requestingUser = req.headers['x-user-id'];
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.rows[0].user_id !== requestingUser) {
+      return res.status(403).json({ error: 'You do not have access to this case.' });
+    }
+
+    const row = await getCaseImageBytes(caseId, index);
+    if (!row || !row.image_data) {
+      return res.status(404).json({ error: 'Image not found.' });
+    }
+
+    res.setHeader('Content-Type', row.image_mime_type || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.status(200).send(row.image_data);
+  } catch (err) {
+    console.error('[violations/:id/images/:index]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve image.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
  * GET /violations/:id
  * Returns a single case by UUID, including its images.
  *
@@ -363,7 +418,8 @@ app.get('/violations/:id', async (req, res) => {
 
     // Ownership check — the gateway passes X-User-Id from the JWT
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -397,7 +453,8 @@ app.get('/violations/:id/status', async (req, res) => {
     const caseRow = result.rows[0];
 
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -428,7 +485,8 @@ app.patch('/violations/:id/report', async (req, res) => {
 
     // Ownership check
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -564,7 +622,8 @@ app.delete('/violations/:id', async (req, res) => {
 
     // Ownership check
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -615,7 +674,8 @@ app.get('/violations/:id/audit', async (req, res) => {
     }
 
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && result.rows[0].user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && result.rows[0].user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
