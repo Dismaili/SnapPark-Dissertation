@@ -83,10 +83,27 @@ export const dispatchNotification = async (eventType, event) => {
 
   const { message, subject, metadata } = builder(event);
 
-  // 2. Get (or create default) preferences for the user
+  // 2. Get (or create default) preferences for the user.
+  //    First-time users get email enabled by default with their auth email
+  //    pre-filled, so they receive notifications without first visiting Settings.
   let prefs = await getNotificationPreferences(event.userId);
   if (!prefs) {
-    prefs = await upsertNotificationPreferences({ userId: event.userId });
+    prefs = await upsertNotificationPreferences({
+      userId:    event.userId,
+      emailAddr: event.userEmail || null,
+    });
+  } else if (!prefs.email_addr && event.userEmail) {
+    // User has prefs but never set an email address — backfill from the event.
+    prefs = await upsertNotificationPreferences({
+      userId:    event.userId,
+      inApp:     prefs.in_app,
+      sms:       prefs.sms,
+      email:     prefs.email,
+      push:      prefs.push,
+      phone:     prefs.phone,
+      emailAddr: event.userEmail,
+      fcmToken:  prefs.fcm_token,
+    });
   }
 
   // 3. Determine which channels to dispatch to

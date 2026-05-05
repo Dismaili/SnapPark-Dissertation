@@ -145,7 +145,7 @@ export const getNotificationPreferences = async (userId) => {
  * Create or update notification preferences for a user.
  */
 export const upsertNotificationPreferences = async ({
-  userId, inApp = true, sms = false, email = false, push = false,
+  userId, inApp = true, sms = false, email = true, push = false,
   phone = null, emailAddr = null, fcmToken = null,
 }) => {
   const result = await query(
