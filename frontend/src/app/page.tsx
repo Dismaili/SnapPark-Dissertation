@@ -22,7 +22,16 @@ export default function Landing() {
   const router = useRouter();
 
   useEffect(() => {
-    if (tokenStore.getToken()) router.replace("/dashboard");
+    const token = tokenStore.getToken();
+    const user  = tokenStore.getUser();
+    if (token && user) {
+      // Valid session — send straight to the app.
+      router.replace("/dashboard");
+    } else if (token && !user) {
+      // Stale / corrupt token with no user object — clear it so the
+      // landing page is shown cleanly instead of bouncing to /login.
+      tokenStore.clear();
+    }
   }, [router]);
 
   return (

@@ -141,7 +141,11 @@ export function useAuthGuard(): AuthUser | null {
     const u = tokenStore.getUser();
     const t = tokenStore.getToken();
     if (!u || !t) {
-      router.replace("/login");
+      // Clear any stale storage then send the visitor back to the landing page.
+      // The landing page has "Log in" and "Get started" links so there is no
+      // need to drop users directly onto /login.
+      tokenStore.clear();
+      router.replace("/");
       return;
     }
     setUser(u);
