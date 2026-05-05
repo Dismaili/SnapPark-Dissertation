@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { query, initDB } from './db.js';
 import {
@@ -13,6 +14,7 @@ import {
   createRefreshToken,
   extractBearerToken,
 } from './helpers.js';
+import { sendVerificationEmail } from './email.js';
 
 dotenv.config();
 
@@ -26,6 +28,28 @@ const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret
 const TOKEN_EXPIRY       = process.env.TOKEN_EXPIRY       || '15m';   // short-lived
 const REFRESH_EXPIRY     = process.env.REFRESH_TOKEN_EXPIRY || '7d';  // long-lived
 const SALT_ROUNDS        = Number(process.env.PASSWORD_SALT_ROUNDS || 10);
+
+// Pre-configured admin emails — applied on register, login, and refresh.
+// Lets a fresh registration of an admin email pick up the admin role
+// immediately without requiring a service restart.
+const ADMIN_EMAILS = new Set(
+  (process.env.ADMIN_EMAILS || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+const ensureAdminRole = async (user) => {
+  if (!user || user.role === 'admin' || !ADMIN_EMAILS.has(user.email?.toLowerCase())) {
+    return user;
+  }
+  const r = await query(
+    `UPDATE users SET role = 'admin', updated_at = NOW()
+     WHERE id = $1 RETURNING id, email, role`,
+    [user.id]
+  );
+  return r.rows[0] || user;
+};
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
@@ -58,7 +82,7 @@ app.get('/health', (_req, res) => {
  */
 app.post('/auth/register', async (req, res) => {
   try {
-    const { email, password } = req.body ?? {};
+    const { email, password, firstName, lastName } = req.body ?? {};
 
     // Input validation
     if (!email || !password) {
@@ -71,6 +95,10 @@ app.post('/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
 
+    // First/last name are optional but trimmed and capped to fit the DB column.
+    const cleanFirst = typeof firstName === 'string' ? firstName.trim().slice(0, 100) : null;
+    const cleanLast  = typeof lastName  === 'string' ? lastName.trim().slice(0, 100)  : null;
+
     const normalised = email.toLowerCase();
 
     // Duplicate check
@@ -82,15 +110,28 @@ app.post('/auth/register', async (req, res) => {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
-    // Persist user
-    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    // Persist user. Role defaults to 'citizen'; admins are minted out-of-band
+    // by the ADMIN_EMAILS bootstrap (or by an existing admin via SQL).
+    const passwordHash      = await bcrypt.hash(password, SALT_ROUNDS);
+    const verificationToken = crypto.randomUUID();
+    const tokenExpires      = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 h
+
     const result = await query(
-      `INSERT INTO users (email, password_hash)
-       VALUES ($1, $2)
-       RETURNING id, email, created_at`,
-      [normalised, passwordHash]
+      `INSERT INTO users
+         (email, password_hash, first_name, last_name, verification_token, verification_token_expires)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, email, role, first_name, last_name, email_verified, created_at`,
+      [normalised, passwordHash, cleanFirst, cleanLast, verificationToken, tokenExpires]
     );
-    const user = result.rows[0];
+    let user = result.rows[0];
+    user = await ensureAdminRole(user);
+
+    // Send verification email (non-blocking — failure doesn't break registration)
+    sendVerificationEmail({
+      to:        user.email,
+      firstName: user.first_name,
+      token:     verificationToken,
+    }).catch((err) => console.warn('[register] Verification email failed:', err.message));
 
     // Issue tokens
     const accessToken  = createAccessToken(user, JWT_SECRET, TOKEN_EXPIRY);
@@ -104,7 +145,15 @@ app.post('/auth/register', async (req, res) => {
     );
 
     return res.status(201).json({
-      user: { id: user.id, email: user.email, createdAt: user.created_at },
+      user: {
+        id:            user.id,
+        email:         user.email,
+        role:          user.role,
+        firstName:     user.first_name,
+        lastName:      user.last_name,
+        emailVerified: user.email_verified,
+        createdAt:     user.created_at,
+      },
       token: accessToken,
       refreshToken,
     });
@@ -131,13 +180,13 @@ app.post('/auth/login', async (req, res) => {
     }
 
     const result = await query(
-      'SELECT id, email, password_hash FROM users WHERE email = $1',
+      'SELECT id, email, role, first_name, last_name, email_verified, password_hash FROM users WHERE email = $1',
       [email.toLowerCase()]
     );
 
     // Use identical error message for both "not found" and "wrong password"
     // to prevent user enumeration attacks
-    const user = result.rows[0];
+    let user = result.rows[0];
     const passwordMatch = user
       ? await bcrypt.compare(password, user.password_hash)
       : false;
@@ -145,6 +194,9 @@ app.post('/auth/login', async (req, res) => {
     if (!user || !passwordMatch) {
       return res.status(401).json({ error: 'Invalid credentials.' });
     }
+
+    // Promote to admin if email is on the allowlist (idempotent — runs every login)
+    user = await ensureAdminRole(user);
 
     // Issue tokens
     const accessToken  = createAccessToken(user, JWT_SECRET, TOKEN_EXPIRY);
@@ -158,7 +210,14 @@ app.post('/auth/login', async (req, res) => {
     );
 
     return res.status(200).json({
-      user: { id: user.id, email: user.email },
+      user: {
+        id:            user.id,
+        email:         user.email,
+        role:          user.role,
+        firstName:     user.first_name,
+        lastName:      user.last_name,
+        emailVerified: user.email_verified,
+      },
       token: accessToken,
       refreshToken,
     });
@@ -238,7 +297,7 @@ app.post('/auth/refresh', async (req, res) => {
 
     // Fetch user
     const userResult = await query(
-      'SELECT id, email FROM users WHERE id = $1',
+      'SELECT id, email, role FROM users WHERE id = $1',
       [payload.sub]
     );
     if (userResult.rows.length === 0) {
@@ -286,6 +345,166 @@ app.post('/auth/logout', async (req, res) => {
   } catch (err) {
     console.error('[logout]', err.message);
     return res.status(500).json({ error: 'Logout failed. Please try again.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * GET /auth/verify-email?token=<uuid>
+ * Marks the user's email as verified. Called when the user clicks the link
+ * in their verification email. Redirects to the frontend on success/failure.
+ */
+app.get('/auth/verify-email', async (req, res) => {
+  const { token } = req.query;
+  const FRONTEND = process.env.APP_FRONTEND_URL || 'http://localhost:3002';
+
+  if (!token) {
+    return res.redirect(`${FRONTEND}/login?verified=invalid`);
+  }
+
+  try {
+    const result = await query(
+      `UPDATE users
+         SET email_verified = TRUE,
+             verification_token = NULL,
+             verification_token_expires = NULL,
+             updated_at = NOW()
+       WHERE verification_token = $1
+         AND verification_token_expires > NOW()
+         AND email_verified = FALSE
+       RETURNING id`,
+      [token]
+    );
+
+    if (result.rowCount === 0) {
+      return res.redirect(`${FRONTEND}/login?verified=invalid`);
+    }
+
+    return res.redirect(`${FRONTEND}/login?verified=true`);
+  } catch (err) {
+    console.error('[verify-email]', err.message);
+    return res.redirect(`${FRONTEND}/login?verified=error`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * POST /auth/resend-verification
+ * Resends the verification email. Requires a valid Bearer access token.
+ */
+app.post('/auth/resend-verification', async (req, res) => {
+  try {
+    const token = extractBearerToken(req);
+    if (!token) return res.status(401).json({ error: 'Authentication required.' });
+
+    const payload = jwt.verify(token, JWT_SECRET);
+    const result  = await query(
+      'SELECT id, email, first_name, email_verified FROM users WHERE id = $1',
+      [payload.sub]
+    );
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user.email_verified) return res.status(400).json({ error: 'Email already verified.' });
+
+    const newToken   = crypto.randomUUID();
+    const newExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await query(
+      `UPDATE users SET verification_token = $1, verification_token_expires = $2 WHERE id = $3`,
+      [newToken, newExpires, user.id]
+    );
+
+    await sendVerificationEmail({ to: user.email, firstName: user.first_name, token: newToken });
+    return res.status(200).json({ message: 'Verification email sent.' });
+  } catch (err) {
+    console.error('[resend-verification]', err.message);
+    return res.status(500).json({ error: 'Failed to resend verification email.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * PATCH /auth/profile
+ * Update the authenticated user's first and last name.
+ * Body: { firstName, lastName }
+ */
+app.patch('/auth/profile', async (req, res) => {
+  try {
+    // The API Gateway verifies the JWT and forwards the user id as X-User-Id.
+    const userId = req.headers['x-user-id'];
+    if (!userId) return res.status(401).json({ error: 'Authentication required.' });
+
+    const { firstName, lastName } = req.body ?? {};
+
+    const cleanFirst = typeof firstName === 'string' ? firstName.trim().slice(0, 100) : undefined;
+    const cleanLast  = typeof lastName  === 'string' ? lastName.trim().slice(0, 100)  : undefined;
+
+    if (cleanFirst === undefined && cleanLast === undefined) {
+      return res.status(400).json({ error: 'Provide at least one field to update.' });
+    }
+
+    const result = await query(
+      `UPDATE users
+         SET first_name  = COALESCE($1, first_name),
+             last_name   = COALESCE($2, last_name),
+             updated_at  = NOW()
+       WHERE id = $3
+       RETURNING id, email, first_name, last_name`,
+      [cleanFirst ?? null, cleanLast ?? null, userId]
+    );
+
+    const updated = result.rows[0];
+    return res.status(200).json({
+      id:        updated.id,
+      email:     updated.email,
+      firstName: updated.first_name,
+      lastName:  updated.last_name,
+    });
+  } catch (err) {
+    console.error('[profile]', err.message);
+    return res.status(500).json({ error: 'Failed to update profile.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * PATCH /auth/password
+ * Change the authenticated user's password.
+ * Body: { currentPassword, newPassword }
+ */
+app.patch('/auth/password', async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'];
+    if (!userId) return res.status(401).json({ error: 'Authentication required.' });
+
+    const { currentPassword, newPassword } = req.body ?? {};
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new passwords are required.' });
+    }
+    if (!isValidPassword(newPassword)) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters.' });
+    }
+
+    const result = await query(
+      'SELECT id, password_hash FROM users WHERE id = $1',
+      [userId]
+    );
+    const user = result.rows[0];
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const match = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!match) return res.status(401).json({ error: 'Current password is incorrect.' });
+
+    const newHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+    await query(
+      'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
+      [newHash, userId]
+    );
+
+    return res.status(200).json({ message: 'Password updated successfully.' });
+  } catch (err) {
+    console.error('[password]', err.message);
+    return res.status(500).json({ error: 'Failed to update password.' });
   }
 });
 
