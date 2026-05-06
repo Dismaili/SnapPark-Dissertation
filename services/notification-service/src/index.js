@@ -205,7 +205,7 @@ app.get('/notifications/preferences/:userId', async (req, res) => {
     if (!prefs) {
       return res.status(200).json({
         user_id: req.params.userId,
-        in_app: true, sms: false, email: false, push: false,
+        in_app: true, sms: false, email: true, push: false,
         phone: null, email_addr: null, fcm_token: null,
       });
     }
@@ -220,14 +220,23 @@ app.get('/notifications/preferences/:userId', async (req, res) => {
  * PUT /notifications/preferences/:userId
  * Create or update notification preferences.
  *
- * Body: { inApp, sms, email, push, phone, emailAddr, fcmToken }
+ * Accepts both camelCase (inApp, emailAddr, fcmToken) and snake_case
+ * (in_app, email_addr, fcm_token) so that the React frontend (which
+ * round-trips the snake_case columns it receives from GET) and any
+ * other client both work.
  */
 app.put('/notifications/preferences/:userId', async (req, res) => {
   try {
-    const { inApp, sms, email, push, phone, emailAddr, fcmToken } = req.body;
+    const b = req.body || {};
     const prefs = await upsertNotificationPreferences({
-      userId: req.params.userId,
-      inApp, sms, email, push, phone, emailAddr, fcmToken,
+      userId:    req.params.userId,
+      inApp:     b.inApp     ?? b.in_app,
+      sms:       b.sms,
+      email:     b.email,
+      push:      b.push,
+      phone:     b.phone     ?? null,
+      emailAddr: b.emailAddr ?? b.email_addr ?? null,
+      fcmToken:  b.fcmToken  ?? b.fcm_token  ?? null,
     });
     return res.status(200).json(prefs);
   } catch (err) {

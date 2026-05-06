@@ -114,7 +114,7 @@ describe('Notification Dispatcher', () => {
 
       await dispatchNotification('case.created', baseEvent);
 
-      expect(mockUpsertPrefs).toHaveBeenCalledWith({ userId: 'user-1' });
+      expect(mockUpsertPrefs).toHaveBeenCalledWith({ userId: 'user-1', emailAddr: null });
     });
 
     it('should skip channels that are disabled', async () => {

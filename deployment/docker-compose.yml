@@ -132,6 +132,17 @@ services:
       TOKEN_EXPIRY: 15m
       REFRESH_TOKEN_EXPIRY: 7d
       PASSWORD_SALT_ROUNDS: 10
+      # Comma-separated list of emails to auto-promote to admin on boot.
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-admin@snappark.test}
+      # Base URL of the API gateway — used in verification email links
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      # Frontend URL — used for post-verification redirects
+      APP_FRONTEND_URL: ${APP_FRONTEND_URL:-http://localhost:3002}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-snapparkillegalparking@gmail.com}
     depends_on:
       postgres_auth:
         condition: service_healthy
@@ -197,7 +208,7 @@ services:
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-noreply@snappark.app}
+      SMTP_FROM: ${SMTP_FROM:-snapparkillegalparking@gmail.com}
       # Push (Firebase) — leave blank to disable
       FIREBASE_SERVICE_ACCOUNT_PATH: ${FIREBASE_SERVICE_ACCOUNT_PATH:-}
     depends_on:

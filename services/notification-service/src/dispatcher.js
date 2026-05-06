@@ -20,48 +20,68 @@ const ADDRESS_FIELD = {
 /**
  * Build message content for each event type.
  */
+/**
+ * Returns a human-friendly reference for the case.
+ * If a license plate was captured, use that ("vehicle ABC-123").
+ * Otherwise fall back to the short case ID ("case 101beb69…").
+ */
+const caseRef = (event) =>
+  event.licensePlate
+    ? `vehicle ${event.licensePlate}`
+    : `case ${event.id.slice(0, 8)}…`;
+
 const buildMessage = {
   'case.created': (event) => {
+    const ref = caseRef(event);
     const violationLabel = event.violationConfirmed
       ? `Violation detected: ${event.violationType} (confidence: ${(event.confidence * 100).toFixed(0)}%)`
       : 'No violation detected in the submitted image.';
 
     return {
-      message: `Your parking report (case ${event.id}) has been analysed. ${violationLabel}`,
+      message: `Your parking report for ${ref} has been analysed. ${violationLabel}`,
       subject: event.violationConfirmed
-        ? `Violation Detected — ${event.violationType}`
-        : 'Parking Report — No Violation Found',
+        ? `Violation Detected — ${event.violationType} (${ref})`
+        : `Parking Report — No Violation Found (${ref})`,
       metadata: {
         eventType:          'case.created',
         caseId:             event.id,
         violationConfirmed: event.violationConfirmed,
         violationType:      event.violationType,
         confidence:         event.confidence,
+        licensePlate:       event.licensePlate || null,
       },
     };
   },
 
-  'case.reported': (event) => ({
-    message: `Good news! Your violation report (case ${event.id}) for "${event.violationType}" has been forwarded to the local authorities. We'll notify you when there's an update.`,
-    subject: `Case Reported to Authorities — ${event.violationType}`,
-    metadata: {
-      eventType:     'case.reported',
-      caseId:        event.id,
-      violationType: event.violationType,
-      reportedAt:    event.reportedAt,
-    },
-  }),
+  'case.reported': (event) => {
+    const ref = caseRef(event);
+    return {
+      message: `Good news! Your violation report for ${ref} ("${event.violationType}") has been forwarded to the local authorities. We'll notify you when there's an update.`,
+      subject: `Case Reported to Authorities — ${event.violationType} (${ref})`,
+      metadata: {
+        eventType:     'case.reported',
+        caseId:        event.id,
+        violationType: event.violationType,
+        licensePlate:  event.licensePlate || null,
+        reportedAt:    event.reportedAt,
+      },
+    };
+  },
 
-  'case.resolved': (event) => ({
-    message: `Your violation report (case ${event.id}) for "${event.violationType}" has been resolved by the authorities. Thank you for helping keep your community safe!`,
-    subject: `Case Resolved — ${event.violationType}`,
-    metadata: {
-      eventType:     'case.resolved',
-      caseId:        event.id,
-      violationType: event.violationType,
-      resolvedAt:    event.resolvedAt,
-    },
-  }),
+  'case.resolved': (event) => {
+    const ref = caseRef(event);
+    return {
+      message: `Your violation report for ${ref} ("${event.violationType}") has been resolved by the authorities. Thank you for helping keep your community safe!`,
+      subject: `Case Resolved — ${event.violationType} (${ref})`,
+      metadata: {
+        eventType:     'case.resolved',
+        caseId:        event.id,
+        violationType: event.violationType,
+        licensePlate:  event.licensePlate || null,
+        resolvedAt:    event.resolvedAt,
+      },
+    };
+  },
 };
 
 /**
@@ -83,10 +103,27 @@ export const dispatchNotification = async (eventType, event) => {
 
   const { message, subject, metadata } = builder(event);
 
-  // 2. Get (or create default) preferences for the user
+  // 2. Get (or create default) preferences for the user.
+  //    First-time users get email enabled by default with their auth email
+  //    pre-filled, so they receive notifications without first visiting Settings.
   let prefs = await getNotificationPreferences(event.userId);
   if (!prefs) {
-    prefs = await upsertNotificationPreferences({ userId: event.userId });
+    prefs = await upsertNotificationPreferences({
+      userId:    event.userId,
+      emailAddr: event.userEmail || null,
+    });
+  } else if (!prefs.email_addr && event.userEmail) {
+    // User has prefs but never set an email address — backfill from the event.
+    prefs = await upsertNotificationPreferences({
+      userId:    event.userId,
+      inApp:     prefs.in_app,
+      sms:       prefs.sms,
+      email:     prefs.email,
+      push:      prefs.push,
+      phone:     prefs.phone,
+      emailAddr: event.userEmail,
+      fcmToken:  prefs.fcm_token,
+    });
   }
 
   // 3. Determine which channels to dispatch to
