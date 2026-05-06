@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { app, initDB } from '../../src/index.js';
 import { query } from '../../src/db.js';
 import pool from '../../src/db.js';
+import { issueOtp, OTP_PURPOSE } from '../../src/otp.js';
 
 // ─── Test fixtures ───────────────────────────────────────────────────────────
 
@@ -21,21 +22,50 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  // Clean state before every test to ensure isolation
+  // Clean state before every test to ensure isolation. otps depend on users
+  // (FK with ON DELETE CASCADE), so deleting users wipes them — but we delete
+  // explicitly anyway in case the cascade is ever changed.
+  await query('DELETE FROM otps');
   await query('DELETE FROM refresh_tokens');
   await query('DELETE FROM users');
 });
 
 afterAll(async () => {
+  await query('DELETE FROM otps');
   await query('DELETE FROM refresh_tokens');
   await query('DELETE FROM users');
   await pool.end();
 });
 
-// ─── Helper ──────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const registerUser = (user = TEST_USER) =>
   request(app).post('/auth/register').send(user);
+
+/**
+ * Register a user, mark them verified directly in the DB, then sign them in
+ * to obtain a token pair. Used by every test suite that exercises the
+ * post-verification API surface (login, refresh, logout, etc.) without
+ * coupling those tests to the OTP flow.
+ */
+const registerVerifiedUser = async (user = TEST_USER) => {
+  const reg = await registerUser(user);
+  expect(reg.status).toBe(201);
+
+  await query(
+    'UPDATE users SET email_verified = TRUE WHERE email = $1',
+    [user.email.toLowerCase()]
+  );
+
+  const login = await request(app).post('/auth/login').send(user);
+  expect(login.status).toBe(200);
+  return login.body; // { user, token, refreshToken }
+};
+
+const getUserId = async (email) => {
+  const r = await query('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
+  return r.rows[0]?.id;
+};
 
 // ─── Health Check ────────────────────────────────────────────────────────────
 
@@ -53,35 +83,36 @@ describe('GET /health', () => {
 // ─── Registration ────────────────────────────────────────────────────────────
 
 describe('POST /auth/register', () => {
-  it('should register a new user and return tokens', async () => {
+  it('should create the account in an unverified state and require OTP', async () => {
     const res = await registerUser();
 
     expect(res.status).toBe(201);
-    expect(res.body.user.email).toBe(TEST_USER.email);
-    expect(res.body.user.id).toBeDefined();
-    expect(res.body.user.createdAt).toBeDefined();
-    expect(res.body.token).toBeDefined();
-    expect(res.body.refreshToken).toBeDefined();
+    expect(res.body.requiresVerification).toBe(true);
+    expect(res.body.email).toBe(TEST_USER.email);
+    expect(res.body.ttlMinutes).toBeGreaterThan(0);
+    // Tokens are NOT issued at registration anymore — only after OTP verification.
+    expect(res.body.token).toBeUndefined();
+    expect(res.body.refreshToken).toBeUndefined();
   });
 
-  it('should return a valid access token with correct claims', async () => {
-    const res = await registerUser();
-    const decoded = jwt.verify(res.body.token, JWT_SECRET);
-
-    expect(decoded.sub).toBe(res.body.user.id);
-    expect(decoded.email).toBe(TEST_USER.email);
-    expect(decoded.exp).toBeDefined();
-  });
-
-  it('should store the refresh token in the database', async () => {
-    const res = await registerUser();
-    const stored = await query(
-      'SELECT * FROM refresh_tokens WHERE user_id = $1',
-      [res.body.user.id]
+  it('should persist the user as unverified', async () => {
+    await registerUser();
+    const r = await query(
+      'SELECT email_verified FROM users WHERE email = $1',
+      [TEST_USER.email]
     );
+    expect(r.rows[0].email_verified).toBe(false);
+  });
 
-    expect(stored.rows).toHaveLength(1);
-    expect(stored.rows[0].token).toBe(res.body.refreshToken);
+  it('should create exactly one active email-verification OTP for the user', async () => {
+    await registerUser();
+    const userId = await getUserId(TEST_USER.email);
+    const r = await query(
+      `SELECT id FROM otps
+        WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+      [userId, OTP_PURPOSE.EMAIL_VERIFICATION]
+    );
+    expect(r.rows).toHaveLength(1);
   });
 
   it('should normalise email to lowercase', async () => {
@@ -90,7 +121,7 @@ describe('POST /auth/register', () => {
       .send({ email: 'USER@EXAMPLE.COM', password: 'securepassword123' });
 
     expect(res.status).toBe(201);
-    expect(res.body.user.email).toBe('user@example.com');
+    expect(res.body.email).toBe('user@example.com');
   });
 
   it('should hash the password (never store plaintext)', async () => {
@@ -144,11 +175,340 @@ describe('POST /auth/register', () => {
   });
 });
 
+// ─── OTP Verification ────────────────────────────────────────────────────────
+
+describe('POST /auth/verify-otp', () => {
+  let userId;
+  let validCode;
+
+  beforeEach(async () => {
+    await registerUser();
+    userId = await getUserId(TEST_USER.email);
+    // Issue a fresh OTP whose plaintext we control so the test can submit it.
+    const otp = await issueOtp({ userId, purpose: OTP_PURPOSE.EMAIL_VERIFICATION });
+    validCode = otp.code;
+  });
+
+  it('should verify the user, mark email_verified, and return tokens', async () => {
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.email).toBe(TEST_USER.email);
+    expect(res.body.user.emailVerified).toBe(true);
+    expect(res.body.token).toBeDefined();
+    expect(res.body.refreshToken).toBeDefined();
+
+    const r = await query('SELECT email_verified FROM users WHERE id = $1', [userId]);
+    expect(r.rows[0].email_verified).toBe(true);
+  });
+
+  it('should issue a valid access token signed with the configured secret', async () => {
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+
+    const decoded = jwt.verify(res.body.token, JWT_SECRET);
+    expect(decoded.sub).toBe(userId);
+    expect(decoded.email).toBe(TEST_USER.email);
+  });
+
+  it('should consume the OTP so it cannot be reused', async () => {
+    await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+
+    const replay = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+
+    // Already verified → 400 'already verified'; the underlying OTP is also consumed.
+    expect(replay.status).toBe(400);
+  });
+
+  it('should reject the wrong code with 400', async () => {
+    const wrong = validCode === '0000' ? '1111' : '0000';
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: wrong });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/invalid/i);
+  });
+
+  it('should reject non-numeric or wrong-length codes', async () => {
+    const a = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: 'abcd' });
+    const b = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: '12' });
+
+    expect(a.status).toBe(400);
+    expect(b.status).toBe(400);
+  });
+
+  it('should return 429 after too many wrong attempts and burn the code', async () => {
+    const wrong = validCode === '0000' ? '1111' : '0000';
+    // Default OTP_MAX_ATTEMPTS = 5; submit 5 wrong codes to exhaust attempts.
+    for (let i = 0; i < 5; i++) {
+      await request(app)
+        .post('/auth/verify-otp')
+        .send({ email: TEST_USER.email, code: wrong });
+    }
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: wrong });
+    expect(res.status).toBe(429);
+    expect(res.body.error).toMatch(/too many/i);
+
+    // Even submitting the originally-correct code now must fail — the row is consumed.
+    const stillBlocked = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+    expect(stillBlocked.status).toBe(400);
+  });
+
+  it('should not enumerate accounts: unknown email returns the same 400', async () => {
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: 'nobody@example.com', code: '0000' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('should reject re-verification once email is already verified', async () => {
+    await query('UPDATE users SET email_verified = TRUE WHERE id = $1', [userId]);
+    const res = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email: TEST_USER.email, code: validCode });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/already verified/i);
+  });
+
+  it('should reject missing fields with 400', async () => {
+    const a = await request(app).post('/auth/verify-otp').send({ code: validCode });
+    const b = await request(app).post('/auth/verify-otp').send({ email: TEST_USER.email });
+    expect(a.status).toBe(400);
+    expect(b.status).toBe(400);
+  });
+});
+
+// ─── Resend OTP ──────────────────────────────────────────────────────────────
+
+describe('POST /auth/resend-otp', () => {
+  it('should issue a new active OTP and invalidate the previous one', async () => {
+    await registerUser();
+    const userId = await getUserId(TEST_USER.email);
+
+    const before = await query(
+      `SELECT id FROM otps WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+      [userId, OTP_PURPOSE.EMAIL_VERIFICATION]
+    );
+    const beforeId = before.rows[0].id;
+
+    const res = await request(app)
+      .post('/auth/resend-otp')
+      .send({ email: TEST_USER.email });
+    expect(res.status).toBe(200);
+
+    const after = await query(
+      `SELECT id FROM otps WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+      [userId, OTP_PURPOSE.EMAIL_VERIFICATION]
+    );
+    expect(after.rows).toHaveLength(1);
+    expect(after.rows[0].id).not.toBe(beforeId);
+  });
+
+  it('should respond 200 generically for unknown emails (no enumeration)', async () => {
+    const res = await request(app)
+      .post('/auth/resend-otp')
+      .send({ email: 'nobody@example.com' });
+    expect(res.status).toBe(200);
+  });
+
+  it('should respond 200 generically for already-verified accounts (no enumeration) and not issue a new OTP', async () => {
+    await registerUser();
+    const userId = await getUserId(TEST_USER.email);
+    await query('UPDATE users SET email_verified = TRUE WHERE id = $1', [userId]);
+    // Mark the existing registration OTP consumed to make the assertion meaningful.
+    await query('UPDATE otps SET consumed_at = NOW() WHERE user_id = $1', [userId]);
+
+    const res = await request(app)
+      .post('/auth/resend-otp')
+      .send({ email: TEST_USER.email });
+    expect(res.status).toBe(200);
+
+    const after = await query(
+      `SELECT COUNT(*)::int AS n FROM otps
+        WHERE user_id = $1 AND consumed_at IS NULL`,
+      [userId]
+    );
+    expect(after.rows[0].n).toBe(0);
+  });
+
+  it('should reject malformed email with 400', async () => {
+    const res = await request(app)
+      .post('/auth/resend-otp')
+      .send({ email: 'not-an-email' });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── Forgot / Reset Password ─────────────────────────────────────────────────
+
+describe('Password reset flow', () => {
+  beforeEach(async () => {
+    await registerVerifiedUser();
+  });
+
+  describe('POST /auth/forgot-password', () => {
+    it('should issue a password-reset OTP for an existing account', async () => {
+      const userId = await getUserId(TEST_USER.email);
+      const res = await request(app)
+        .post('/auth/forgot-password')
+        .send({ email: TEST_USER.email });
+      expect(res.status).toBe(200);
+
+      const r = await query(
+        `SELECT id FROM otps WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+        [userId, OTP_PURPOSE.PASSWORD_RESET]
+      );
+      expect(r.rows).toHaveLength(1);
+    });
+
+    it('should respond 200 for unknown emails (no enumeration) and not issue an OTP', async () => {
+      const res = await request(app)
+        .post('/auth/forgot-password')
+        .send({ email: 'nobody@example.com' });
+      expect(res.status).toBe(200);
+
+      const r = await query(
+        `SELECT COUNT(*)::int AS n FROM otps WHERE purpose = $1 AND consumed_at IS NULL`,
+        [OTP_PURPOSE.PASSWORD_RESET]
+      );
+      expect(r.rows[0].n).toBe(0);
+    });
+
+    it('should reject missing/invalid email with 400', async () => {
+      const a = await request(app).post('/auth/forgot-password').send({});
+      const b = await request(app).post('/auth/forgot-password').send({ email: 'bad' });
+      expect(a.status).toBe(400);
+      expect(b.status).toBe(400);
+    });
+  });
+
+  describe('POST /auth/reset-password', () => {
+    let userId;
+    let resetCode;
+
+    beforeEach(async () => {
+      userId = await getUserId(TEST_USER.email);
+      const otp = await issueOtp({ userId, purpose: OTP_PURPOSE.PASSWORD_RESET });
+      resetCode = otp.code;
+    });
+
+    it('should reset the password and revoke all existing refresh tokens', async () => {
+      // Confirm there is a refresh token from the verified-user setup.
+      const before = await query(
+        'SELECT COUNT(*)::int AS n FROM refresh_tokens WHERE user_id = $1',
+        [userId]
+      );
+      expect(before.rows[0].n).toBeGreaterThan(0);
+
+      const res = await request(app)
+        .post('/auth/reset-password')
+        .send({
+          email:       TEST_USER.email,
+          code:        resetCode,
+          newPassword: 'brand-new-pass-123',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/password updated/i);
+
+      // The new password must work on /auth/login.
+      const login = await request(app)
+        .post('/auth/login')
+        .send({ email: TEST_USER.email, password: 'brand-new-pass-123' });
+      expect(login.status).toBe(200);
+
+      // The old password must fail.
+      const oldLogin = await request(app)
+        .post('/auth/login')
+        .send(TEST_USER);
+      expect(oldLogin.status).toBe(401);
+
+      // All previously issued refresh tokens are gone.
+      const after = await query(
+        'SELECT COUNT(*)::int AS n FROM refresh_tokens WHERE user_id = $1',
+        [userId]
+      );
+      // Only the one minted by the new login above should exist.
+      expect(after.rows[0].n).toBe(1);
+    });
+
+    it('should reject the wrong code with 400 and not change the password', async () => {
+      const wrong = resetCode === '0000' ? '1111' : '0000';
+      const res = await request(app)
+        .post('/auth/reset-password')
+        .send({
+          email:       TEST_USER.email,
+          code:        wrong,
+          newPassword: 'brand-new-pass-123',
+        });
+      expect(res.status).toBe(400);
+
+      // Original password still works.
+      const login = await request(app).post('/auth/login').send(TEST_USER);
+      expect(login.status).toBe(200);
+    });
+
+    it('should reject missing fields with 400', async () => {
+      const a = await request(app)
+        .post('/auth/reset-password')
+        .send({ code: resetCode, newPassword: 'brand-new-pass-123' });
+      const b = await request(app)
+        .post('/auth/reset-password')
+        .send({ email: TEST_USER.email, newPassword: 'brand-new-pass-123' });
+      const c = await request(app)
+        .post('/auth/reset-password')
+        .send({ email: TEST_USER.email, code: resetCode });
+      expect(a.status).toBe(400);
+      expect(b.status).toBe(400);
+      expect(c.status).toBe(400);
+    });
+
+    it('should reject a too-short new password with 400', async () => {
+      const res = await request(app)
+        .post('/auth/reset-password')
+        .send({
+          email:       TEST_USER.email,
+          code:        resetCode,
+          newPassword: 'short',
+        });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/8 characters/i);
+    });
+
+    it('should not enumerate: unknown email returns the same 400', async () => {
+      const res = await request(app)
+        .post('/auth/reset-password')
+        .send({
+          email:       'nobody@example.com',
+          code:        '0000',
+          newPassword: 'brand-new-pass-123',
+        });
+      expect(res.status).toBe(400);
+    });
+  });
+});
+
 // ─── Login ───────────────────────────────────────────────────────────────────
 
 describe('POST /auth/login', () => {
   beforeEach(async () => {
-    await registerUser();
+    await registerVerifiedUser();
   });
 
   it('should authenticate with valid credentials and return tokens', async () => {
@@ -189,7 +549,6 @@ describe('POST /auth/login', () => {
       .post('/auth/login')
       .send({ email: TEST_USER.email, password: 'wrongpassword' });
 
-    // Both responses must be indistinguishable to the caller
     expect(wrongEmail.status).toBe(wrongPassword.status);
     expect(wrongEmail.body.error).toBe(wrongPassword.body.error);
   });
@@ -210,9 +569,9 @@ describe('POST /auth/verify', () => {
   let userId;
 
   beforeEach(async () => {
-    const res = await registerUser();
-    validToken = res.body.token;
-    userId = res.body.user.id;
+    const session = await registerVerifiedUser();
+    validToken = session.token;
+    userId     = session.user.id;
   });
 
   it('should confirm a valid access token', async () => {
@@ -236,7 +595,6 @@ describe('POST /auth/verify', () => {
   });
 
   it('should reject an expired token with 401', async () => {
-    // Create a token that already expired
     const expired = jwt.sign(
       { sub: userId, email: TEST_USER.email },
       JWT_SECRET,
@@ -295,8 +653,8 @@ describe('POST /auth/refresh', () => {
   let refreshToken;
 
   beforeEach(async () => {
-    const res = await registerUser();
-    refreshToken = res.body.refreshToken;
+    const session = await registerVerifiedUser();
+    refreshToken = session.refreshToken;
   });
 
   it('should issue a new token pair and rotate the refresh token', async () => {
@@ -307,8 +665,6 @@ describe('POST /auth/refresh', () => {
     expect(res.status).toBe(200);
     expect(res.body.token).toBeDefined();
     expect(res.body.refreshToken).toBeDefined();
-
-    // The new refresh token must differ from the old one (rotation)
     expect(res.body.refreshToken).not.toBe(refreshToken);
   });
 
@@ -317,7 +673,6 @@ describe('POST /auth/refresh', () => {
       .post('/auth/refresh')
       .send({ refreshToken });
 
-    // Attempting to reuse the old token must fail
     const res = await request(app)
       .post('/auth/refresh')
       .send({ refreshToken });
@@ -361,8 +716,8 @@ describe('POST /auth/logout', () => {
   let refreshToken;
 
   beforeEach(async () => {
-    const res = await registerUser();
-    refreshToken = res.body.refreshToken;
+    const session = await registerVerifiedUser();
+    refreshToken = session.refreshToken;
   });
 
   it('should revoke the refresh token and return success', async () => {
@@ -398,40 +753,56 @@ describe('POST /auth/logout', () => {
 // ─── Full Authentication Flow ────────────────────────────────────────────────
 
 describe('End-to-end authentication flow', () => {
-  it('should complete: register → login → verify → refresh → logout', async () => {
-    // 1. Register
+  it('should complete: register → verify-otp → login → verify → refresh → logout', async () => {
+    const email    = 'flow@test.com';
+    const password = 'flowpassword123';
+
+    // 1. Register — no tokens yet
     const regRes = await request(app)
       .post('/auth/register')
-      .send({ email: 'flow@test.com', password: 'flowpassword123' });
+      .send({ email, password });
     expect(regRes.status).toBe(201);
+    expect(regRes.body.requiresVerification).toBe(true);
 
-    // 2. Login with the same credentials
+    // 2. Issue a known OTP via the module so we can submit it
+    const userId = await getUserId(email);
+    const { code } = await issueOtp({
+      userId,
+      purpose: OTP_PURPOSE.EMAIL_VERIFICATION,
+    });
+
+    // 3. Verify OTP — tokens issued here for the first time
+    const verifyOtpRes = await request(app)
+      .post('/auth/verify-otp')
+      .send({ email, code });
+    expect(verifyOtpRes.status).toBe(200);
+    expect(verifyOtpRes.body.token).toBeDefined();
+
+    // 4. Subsequent login also succeeds
     const loginRes = await request(app)
       .post('/auth/login')
-      .send({ email: 'flow@test.com', password: 'flowpassword123' });
+      .send({ email, password });
     expect(loginRes.status).toBe(200);
 
-    // 3. Verify the access token
+    // 5. Verify the access token
     const verifyRes = await request(app)
       .post('/auth/verify')
       .send({ token: loginRes.body.token });
     expect(verifyRes.status).toBe(200);
-    expect(verifyRes.body.valid).toBe(true);
 
-    // 4. Refresh the token pair
+    // 6. Refresh the token pair
     const refreshRes = await request(app)
       .post('/auth/refresh')
       .send({ refreshToken: loginRes.body.refreshToken });
     expect(refreshRes.status).toBe(200);
-    expect(refreshRes.body.token).toBeDefined();
 
-    // 5. Logout — revoke the new refresh token
+    // 7. Logout — revoke the new refresh token
     const logoutRes = await request(app)
       .post('/auth/logout')
       .send({ refreshToken: refreshRes.body.refreshToken });
     expect(logoutRes.status).toBe(200);
 
-    // 6. Confirm the revoked token can no longer be used
+    // 8. The revoked token can no longer be used
     const reuseRes = await request(app)
       .post('/auth/refresh')
       .send({ refreshToken: refreshRes.body.refreshToken });
