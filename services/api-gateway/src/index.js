@@ -188,33 +188,20 @@ app.get('/health', (_req, res) => {
 // ─── Public Auth Routes (no token required) ──────────────────────────────────
 // These are simple pass-through proxies to the Authentication Service.
 
-app.post('/auth/register', proxyJSON(`${AUTH_SERVICE_URL}/auth/register`));
-app.post('/auth/login',    proxyJSON(`${AUTH_SERVICE_URL}/auth/login`));
-app.post('/auth/refresh',  proxyJSON(`${AUTH_SERVICE_URL}/auth/refresh`));
+app.post('/auth/register',         proxyJSON(`${AUTH_SERVICE_URL}/auth/register`));
+app.post('/auth/login',            proxyJSON(`${AUTH_SERVICE_URL}/auth/login`));
+app.post('/auth/refresh',          proxyJSON(`${AUTH_SERVICE_URL}/auth/refresh`));
 
-// Email verification — public (token in URL, no Bearer needed)
-app.get('/auth/verify-email', async (req, res) => {
-  try {
-    const response = await axios.get(`${AUTH_SERVICE_URL}/auth/verify-email`, {
-      params: req.query,
-      maxRedirects: 0,
-      validateStatus: (s) => s < 400,
-    });
-    // Forward the redirect from the auth service to the browser
-    if (response.status === 302 || response.headers.location) {
-      return res.redirect(response.headers.location);
-    }
-    return res.status(response.status).json(response.data);
-  } catch (err) {
-    if (err.response?.headers?.location) return res.redirect(err.response.headers.location);
-    return res.status(502).json({ error: 'Verification service unavailable.' });
-  }
-});
+// OTP-based registration verification + password reset — all public because
+// the user has no access token at this point in either flow.
+app.post('/auth/verify-otp',       proxyJSON(`${AUTH_SERVICE_URL}/auth/verify-otp`));
+app.post('/auth/resend-otp',       proxyJSON(`${AUTH_SERVICE_URL}/auth/resend-otp`));
+app.post('/auth/forgot-password',  proxyJSON(`${AUTH_SERVICE_URL}/auth/forgot-password`));
+app.post('/auth/reset-password',   proxyJSON(`${AUTH_SERVICE_URL}/auth/reset-password`));
 
 // ─── Protected Auth Routes ───────────────────────────────────────────────────
 
 app.post('/auth/logout',               authenticate, proxyJSON(`${AUTH_SERVICE_URL}/auth/logout`));
-app.post('/auth/resend-verification',  authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/resend-verification`));
 app.patch('/auth/profile',             authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/profile`));
 app.patch('/auth/password',            authenticate, proxyAuthenticated(`${AUTH_SERVICE_URL}/auth/password`));
 
