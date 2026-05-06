@@ -49,6 +49,24 @@ export default function CaseDetailPage() {
     ? auditRaw
     : (auditRaw as { events: AuditEntry[] })?.events ?? [];
 
+  const { data: similar } = useQuery({
+    queryKey: ["case-similar", id],
+    queryFn: () =>
+      apiFetch<{
+        results: Array<{
+          id: string;
+          violation_type: string | null;
+          violation_confirmed: boolean;
+          confidence: number | null;
+          license_plate: string | null;
+          distance: number;
+          created_at: string;
+        }>;
+        embedded: boolean;
+        reason?: string;
+      }>(`/violations/${id}/similar?limit=5`),
+  });
+
   const reportMutation = useMutation({
     mutationFn: () =>
       apiFetch(`/violations/${id}/report`, { method: "PATCH" }),
@@ -157,6 +175,64 @@ export default function CaseDetailPage() {
             <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">
               {c.explanation || "No explanation provided."}
             </p>
+          </section>
+
+          {/* Similar cases (vector similarity over Gemini-verdict embeddings) */}
+          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-sm font-semibold text-slate-900">Similar cases</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Found by vector similarity over the AI&apos;s verdict text (pgvector,
+              cosine distance).
+            </p>
+            <ul className="mt-4 space-y-2">
+              {!similar && (
+                <li className="text-sm text-slate-500">Loading…</li>
+              )}
+              {similar && similar.embedded === false && (
+                <li className="text-sm text-slate-500">
+                  This case has no embedding yet — semantic similarity is not
+                  available.
+                </li>
+              )}
+              {similar && similar.embedded && similar.results.length === 0 && (
+                <li className="text-sm text-slate-500">
+                  No comparable prior cases yet.
+                </li>
+              )}
+              {similar?.results.map((s) => {
+                // distance is cosine: 0 = identical, 2 = opposite. Convert
+                // to a 0–100 similarity score for the UI (1 - d/2, clamped).
+                const score = Math.max(0, Math.min(100, Math.round((1 - s.distance / 2) * 100)));
+                return (
+                  <li key={s.id}>
+                    <Link
+                      href={`/cases/${s.id}`}
+                      className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm hover:bg-slate-100"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-slate-900">
+                          {s.violation_type || "No violation detected"}
+                          {s.license_plate && (
+                            <span className="ml-2 text-xs text-slate-500">
+                              {s.license_plate}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {formatDate(s.created_at)}
+                        </div>
+                      </div>
+                      <span
+                        className="ml-3 shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"
+                        title={`cosine distance ${s.distance.toFixed(3)}`}
+                      >
+                        {score}% match
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
           </section>
 
           {/* Audit trail — admin only */}
