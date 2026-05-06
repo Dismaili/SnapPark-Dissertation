@@ -10,6 +10,9 @@ import { connectRabbitMQ, publishCaseCreated, publishCaseReported, publishCaseRe
 import { analyseImage, analyseMultipleImages } from './gemini.js';
 import { validateImageQuality } from './imageValidator.js';
 import { startCleanupJob } from './cleanup.js';
+import { runCaseCreationSaga } from './saga/caseCreationSaga.js';
+import { getSaga } from './saga/coordinator.js';
+import { startSagaListener } from './saga/listeners.js';
 
 dotenv.config();
 
@@ -181,81 +184,44 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
 
     console.log(`[analyze] ${imageDetails.length} image(s) passed quality check`);
 
-    // ── Gemini analysis ─────────────────────────────────────────────────────
-    let analysis;
-    if (imageDetails.length === 1) {
-      analysis = await analyseImage(imageDetails[0].base64, imageDetails[0].mimeType);
-    } else {
-      analysis = await analyseMultipleImages(
-        imageDetails.map((d) => ({ base64: d.base64, mimeType: d.mimeType }))
-      );
+    // ── Saga-orchestrated case creation ─────────────────────────────────────
+    //
+    // The previous version of this handler ran each step (Gemini, INSERT case,
+    // INSERT case_images, audit log, publish event) inline with no
+    // compensation: a failure halfway through left orphaned rows. The saga
+    // coordinator persists state at every transition and runs compensations
+    // in reverse order on failure. See src/saga/caseCreationSaga.js for the
+    // step definitions and src/saga/coordinator.js for the engine.
+
+    let sagaResult;
+    try {
+      sagaResult = await runCaseCreationSaga({
+        analyser: { analyseImage, analyseMultipleImages },
+        context: {
+          userId,
+          userEmail,
+          licensePlate,
+          latitude,
+          longitude,
+          locationLabel,
+          imageDetails,
+        },
+      });
+    } catch (err) {
+      // The coordinator already ran compensations and recorded the
+      // outcome in the sagas table. Surface the saga id so the response
+      // is debuggable (audit_log + sagas table together explain exactly
+      // which step failed and what was rolled back).
+      console.error(`[analyze] Saga failed (sagaId=${err.sagaId}):`, err.message);
+      return res.status(502).json({
+        error:       'Failed to create violation case. The operation was rolled back.',
+        sagaId:      err.sagaId,
+        failedStep:  err.failedStep,
+        compensated: err.compensated,
+      });
     }
 
-    // ── Persist case to database ────────────────────────────────────────────
-    const totalBytes = imageDetails.reduce((sum, d) => sum + d.sizeBytes, 0);
-    const result = await query(
-      `INSERT INTO cases
-         (user_id, status, violation_confirmed, violation_type, confidence, explanation,
-          license_plate, latitude, longitude, location_label,
-          image_mime_type, image_size_bytes, image_count, completed_at)
-       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
-       RETURNING *`,
-      [
-        userId,
-        analysis.violationConfirmed,
-        analysis.violationType,
-        analysis.confidence,
-        analysis.explanation,
-        licensePlate  || null,
-        latitude      ?? null,
-        longitude     ?? null,
-        locationLabel || null,
-        imageDetails[0].mimeType,  // primary image type
-        totalBytes,
-        imageDetails.length,
-      ]
-    );
-    const savedCase = result.rows[0];
-
-    // ── Persist individual image records ─────────────────────────────────
-    // Store the raw bytes too so the frontend can render the photo on the
-    // case detail page next to the AI verdict.
-    await insertCaseImages(
-      savedCase.id,
-      imageDetails.map((d) => ({
-        mimeType:     d.mimeType,
-        sizeBytes:    d.sizeBytes,
-        data:         d.buffer,
-        qualityStats: d.qualityStats,
-      }))
-    );
-
-    // ── Audit log ────────────────────────────────────────────────────────────
-    await auditLog({
-      eventType: 'CaseCreated',
-      caseId:    savedCase.id,
-      userId:    savedCase.user_id,
-      payload: {
-        violationConfirmed: savedCase.violation_confirmed,
-        violationType:      savedCase.violation_type,
-        confidence:         savedCase.confidence,
-        imageCount:         savedCase.image_count,
-      },
-    });
-
-    // ── Publish event ────────────────────────────────────────────────────────
-    publishCaseCreated({
-      id:                 savedCase.id,
-      userId:             savedCase.user_id,
-      userEmail,                                // pre-fills email_addr in defaults
-      violationConfirmed: savedCase.violation_confirmed,
-      violationType:      savedCase.violation_type,
-      confidence:         savedCase.confidence,
-      explanation:        savedCase.explanation,
-      licensePlate:       savedCase.license_plate,
-      imageCount:         savedCase.image_count,
-      createdAt:          savedCase.created_at,
-    });
+    const { savedCase, analysis } = sagaResult;
 
     return res.status(201).json({
       caseId:     savedCase.id,
@@ -264,6 +230,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       imageCount: savedCase.image_count,
       analysis,
       createdAt:  savedCase.created_at,
+      sagaId:     sagaResult.sagaId,
     });
   } catch (err) {
     console.error('[analyze]', err.message);
@@ -704,6 +671,24 @@ app.get('/violations/:id/audit', async (req, res) => {
 });
 
 /**
+ * GET /sagas/:id
+ * Inspect the full state of a saga — current status, the per-step
+ * history (start / succeed / fail / compensate), and any external events
+ * that arrived later (e.g. notification.failed). Surfaced primarily as
+ * dissertation evidence; also useful for debugging in development.
+ */
+app.get('/sagas/:id', async (req, res) => {
+  try {
+    const saga = await getSaga(req.params.id);
+    if (!saga) return res.status(404).json({ error: 'Saga not found.' });
+    return res.status(200).json(saga);
+  } catch (err) {
+    console.error('[sagas/:id]', err.message);
+    return res.status(500).json({ error: 'Failed to fetch saga.' });
+  }
+});
+
+/**
  * GET /violations/audit/user/:userId
  * Returns all audit events for a specific user.
  */
@@ -746,10 +731,15 @@ const start = async () => {
   // Start the auto-cleanup job for stale pending cases (FR7)
   startCleanupJob();
 
-  // RabbitMQ connection is non-blocking — service starts even if broker is down
-  connectRabbitMQ().catch((err) => {
-    console.warn('[RabbitMQ] Background connect failed:', err.message);
-  });
+  // RabbitMQ connection is non-blocking — service starts even if broker is down.
+  // The saga listener is started after the channel is up so it can subscribe
+  // to notification.failed events; if RabbitMQ never connects, distributed
+  // compensation is logged-and-skipped (the in-process saga still works).
+  connectRabbitMQ()
+    .then(() => startSagaListener().catch((err) =>
+      console.warn('[saga] Listener failed to start:', err.message)
+    ))
+    .catch((err) => console.warn('[RabbitMQ] Background connect failed:', err.message));
 
   app.listen(PORT, () => {
     console.log(`[violation-analysis-service] Listening on port ${PORT}`);

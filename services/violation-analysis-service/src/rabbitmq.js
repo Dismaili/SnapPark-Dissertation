@@ -79,3 +79,30 @@ export const publishCaseReported = (payload) => publish('case.reported', payload
  * Publish a CaseResolved event — fired when a case is marked as resolved.
  */
 export const publishCaseResolved = (payload) => publish('case.resolved', payload);
+
+/**
+ * Publish a CaseCancelled event — emitted by the saga's compensation
+ * step when a case-creation flow is rolled back. The notification
+ * service treats this as a request to suppress / withdraw any in-app
+ * notification that may have been generated for the cancelled case.
+ */
+export const publishCaseCancelled = (payload) => publish('case.cancelled', payload);
+
+/**
+ * Strict variant of publish() used by saga steps: throws on failure
+ * instead of swallowing the error. The fire-and-forget publishers above
+ * deliberately log-and-continue because the original handlers were
+ * structured around best-effort delivery; saga steps need the opposite
+ * contract — a failure must propagate so the coordinator can compensate.
+ */
+export const publishStrict = (routingKey, payload) => {
+  if (!channel) {
+    throw new Error(`RabbitMQ channel unavailable — cannot publish ${routingKey}`);
+  }
+  const message = Buffer.from(JSON.stringify(payload));
+  const ok = channel.publish(EXCHANGE, routingKey, message, { persistent: true });
+  if (!ok) {
+    throw new Error(`RabbitMQ refused publish for ${routingKey} (back-pressure)`);
+  }
+  console.log(`[RabbitMQ] Published ${routingKey} (strict) for case`, payload.id);
+};
