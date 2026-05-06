@@ -76,7 +76,7 @@ export default function Landing() {
                 <Sparkles className="h-3 w-3" /> AI-powered parking enforcement
               </span>
               <h1 className="mt-5 text-4xl font-bold leading-tight tracking-tight text-slate-900 md:text-6xl">
-                Report illegal parking with a single photo.
+                Report illegal parking with a single photo
               </h1>
               <p className="mt-6 text-lg leading-relaxed text-slate-600">
                 SnapPark turns ordinary citizens into civic helpers. Take a photo

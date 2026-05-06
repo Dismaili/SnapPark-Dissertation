@@ -32,7 +32,6 @@ export function LocationPicker({ value, onChange }: Props) {
 
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: apiKey,
-    libraries: ["geocoding"],
   });
 
   const mapRef = useRef<google.maps.Map | null>(null);
