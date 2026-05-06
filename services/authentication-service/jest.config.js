@@ -1,6 +1,19 @@
 export default {
   testEnvironment: 'node',
   transform: {},
+
+  // Coverage configuration is set at the top level rather than per-project
+  // so a single jest --coverage run produces one coverage-final.json
+  // covering both unit and integration tests. The `scripts/coverage-metrics.js`
+  // analyzer relies on the istanbul-format coverage-final.json — Jest
+  // produces this by default since it ships with istanbul under the hood.
+  coverageProvider: 'babel',
+  coverageDirectory: 'coverage',
+  coverageReporters: ['text', 'json', 'json-summary'],
+  collectCoverageFrom: [
+    'src/**/*.js',
+  ],
+
   // Separate unit and integration test suites
   projects: [
     {
