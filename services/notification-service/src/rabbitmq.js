@@ -95,3 +95,27 @@ export const connectAndConsume = async (handlers) => {
 
   console.warn('[RabbitMQ] Could not connect after all retries — consuming disabled');
 };
+
+/**
+ * Publish a notification.failed event back to the violation-analysis
+ * service. This closes the saga's distributed-compensation loop: when a
+ * notification can't be delivered after all retries, the originating
+ * saga's history reflects the asynchronous failure, and the case is
+ * tagged so the dashboard can show "we couldn't reach you about this".
+ *
+ * Best-effort publish — if the channel isn't ready we log and continue;
+ * the dispatcher's own delivery_log table is the durable record.
+ */
+export const publishNotificationFailed = (payload) => {
+  if (!channel) {
+    console.warn('[RabbitMQ] Channel unavailable — skipping notification.failed for case', payload.caseId);
+    return;
+  }
+  try {
+    const message = Buffer.from(JSON.stringify(payload));
+    channel.publish(EXCHANGE, 'notification.failed', message, { persistent: true });
+    console.log('[RabbitMQ] Published notification.failed for case', payload.caseId);
+  } catch (err) {
+    console.warn('[RabbitMQ] notification.failed publish failed:', err.message);
+  }
+};

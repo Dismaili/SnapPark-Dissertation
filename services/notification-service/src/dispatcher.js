@@ -4,6 +4,7 @@ import {
   upsertNotificationPreferences,
   insertDeliveryLog,
 } from './db.js';
+import { publishNotificationFailed } from './rabbitmq.js';
 
 /**
  * Channel-to-address mapping.
@@ -172,8 +173,29 @@ export const dispatchNotification = async (eventType, event) => {
   );
 
   // 5. Normalise allSettled results
-  return results.map((r, i) => {
+  const outcomes = results.map((r, i) => {
     if (r.status === 'fulfilled') return r.value;
     return { channel: enabledChannels[i], success: false, error: r.reason?.message };
   });
+
+  // 6. Saga callback: if every enabled channel failed, publish
+  //    notification.failed so the originating saga can record the failure
+  //    and tag the case. We deliberately fire ONLY on full failure —
+  //    a partial success (e.g. in-app worked but email bounced) means
+  //    the user did get notified, so the saga doesn't need to act.
+  //
+  //    `event.sagaId` is the link back to the case-creation saga; if
+  //    absent (e.g. the event came from a non-saga source), we still
+  //    publish but the listener treats sagaId-less payloads as "no-op".
+  if (outcomes.length > 0 && outcomes.every((o) => !o.success)) {
+    publishNotificationFailed({
+      sagaId:  event.sagaId ?? null,
+      caseId:  event.id,
+      userId:  event.userId,
+      channel: outcomes.map((o) => o.channel).join(','),
+      error:   outcomes.map((o) => o.error).filter(Boolean).join('; ') || 'all channels failed',
+    });
+  }
+
+  return outcomes;
 };
