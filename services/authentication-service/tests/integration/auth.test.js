@@ -560,6 +560,52 @@ describe('POST /auth/login', () => {
     expect(noEmail.status).toBe(400);
     expect(noPass.status).toBe(400);
   });
+
+  it('should reject login for unverified accounts with 403 and re-issue an OTP', async () => {
+    // Register a separate user that we DON'T verify.
+    const unverified = { email: 'unverified@test.com', password: 'unverifiedpw123' };
+    const reg = await registerUser(unverified);
+    expect(reg.status).toBe(201);
+
+    const userId = await getUserId(unverified.email);
+    // Consume the registration OTP so we can prove a NEW one is issued by login.
+    await query(
+      `UPDATE otps SET consumed_at = NOW() WHERE user_id = $1`,
+      [userId]
+    );
+
+    const res = await request(app)
+      .post('/auth/login')
+      .send(unverified);
+
+    expect(res.status).toBe(403);
+    expect(res.body.requiresVerification).toBe(true);
+    expect(res.body.email).toBe(unverified.email);
+    expect(res.body.token).toBeUndefined();
+
+    const otps = await query(
+      `SELECT id FROM otps
+        WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+      [userId, OTP_PURPOSE.EMAIL_VERIFICATION]
+    );
+    expect(otps.rows).toHaveLength(1);
+  });
+
+  it('should not reveal "unverified" when the password is wrong', async () => {
+    // Wrong password on an unverified account must still look identical to
+    // any other invalid-credentials response — otherwise the endpoint leaks
+    // verification state, which is itself an enumeration vector.
+    const unverified = { email: 'leak-check@test.com', password: 'rightpw12345' };
+    await registerUser(unverified);
+
+    const res = await request(app)
+      .post('/auth/login')
+      .send({ email: unverified.email, password: 'wrong-pass-1234' });
+
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/invalid credentials/i);
+    expect(res.body.requiresVerification).toBeUndefined();
+  });
 });
 
 // ─── Token Verification ─────────────────────────────────────────────────────

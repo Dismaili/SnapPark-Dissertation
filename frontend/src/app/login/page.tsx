@@ -31,6 +31,18 @@ function LoginInner() {
       tokenStore.set(data.token, data.refreshToken, data.user);
       router.replace("/dashboard");
     } catch (err) {
+      // Unverified accounts get bounced back to the OTP screen with a fresh
+      // code already on the way. The auth service signals this via 403 +
+      // requiresVerification.
+      if (
+        err instanceof ApiError &&
+        err.status === 403 &&
+        (err.body as { requiresVerification?: boolean })?.requiresVerification
+      ) {
+        const target = (err.body as { email?: string })?.email || email;
+        router.replace(`/verify-otp?email=${encodeURIComponent(target)}`);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Login failed.");
     } finally {
       setLoading(false);

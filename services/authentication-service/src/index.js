@@ -428,6 +428,31 @@ app.post('/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials.' });
     }
 
+    // Block unverified accounts. The credentials check above runs first so
+    // we never reveal "unverified" for a wrong password (which would leak
+    // that the email is registered).
+    if (!user.email_verified) {
+      // Issue a fresh OTP so the verify screen has a code waiting; the
+      // previous one (from registration) may have expired or been consumed.
+      const { code } = await issueOtp({
+        userId:  user.id,
+        purpose: OTP_PURPOSE.EMAIL_VERIFICATION,
+      });
+      sendVerificationOtpEmail({
+        to:         user.email,
+        firstName:  user.first_name,
+        code,
+        ttlMinutes: OTP_TTL_MINUTES,
+      }).catch((err) => console.warn('[login] OTP email failed:', err.message));
+
+      return res.status(403).json({
+        error:                'Please verify your email before signing in. We sent a new code to your inbox.',
+        requiresVerification: true,
+        email:                user.email,
+        ttlMinutes:           OTP_TTL_MINUTES,
+      });
+    }
+
     // Promote to admin if email is on the allowlist (idempotent — runs every login)
     user = await ensureAdminRole(user);
 
