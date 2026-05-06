@@ -92,6 +92,30 @@ export const initDB = async () => {
     CREATE INDEX IF NOT EXISTS idx_audit_user_id     ON case_audit_log (user_id);
     CREATE INDEX IF NOT EXISTS idx_audit_event_type  ON case_audit_log (event_type);
     CREATE INDEX IF NOT EXISTS idx_audit_occurred_at ON case_audit_log (occurred_at DESC);
+
+    -- Saga state table.
+    -- Persisting saga state at every transition is what distinguishes a real
+    -- saga from a sequence of try/catch blocks: if the service crashes after
+    -- step N succeeds but before step N+1 starts, on restart we can read the
+    -- last-known state and decide whether to resume forward or compensate.
+    -- The 'history' column is an append-only audit trail of every step
+    -- attempt and every compensation attempt — surfaced verbatim in
+    -- /sagas/:id for dissertation evidence.
+    CREATE TABLE IF NOT EXISTS sagas (
+      id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      saga_type    TEXT NOT NULL,
+      status       TEXT NOT NULL,
+      context      JSONB NOT NULL,
+      current_step TEXT,
+      history      JSONB NOT NULL DEFAULT '[]'::jsonb,
+      error        TEXT,
+      created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sagas_status    ON sagas (status);
+    CREATE INDEX IF NOT EXISTS idx_sagas_saga_type ON sagas (saga_type);
+    CREATE INDEX IF NOT EXISTS idx_sagas_created   ON sagas (created_at DESC);
   `);
 
   // Add columns to existing tables created before these columns existed
