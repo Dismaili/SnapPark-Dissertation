@@ -5,7 +5,7 @@ import morgan from 'morgan';
 import multer from 'multer';
 import dotenv from 'dotenv';
 
-import { query, initDB, insertCaseImages, getCaseImages, getCaseImageBytes, auditLog, getAuditLog, getAuditLogByUser } from './db.js';
+import { query, initDB, insertCaseImages, getCaseImages, getCaseImageBytes, auditLog, getAuditLog, getAuditLogByUser, findSimilarCases } from './db.js';
 import { connectRabbitMQ, publishCaseCreated, publishCaseReported, publishCaseResolved } from './rabbitmq.js';
 import { analyseImage, analyseMultipleImages } from './gemini.js';
 import { validateImageQuality } from './imageValidator.js';
@@ -667,6 +667,61 @@ app.get('/violations/:id/audit', async (req, res) => {
   } catch (err) {
     console.error('[audit]', err.message);
     return res.status(500).json({ error: 'Failed to retrieve audit log.' });
+  }
+});
+
+/**
+ * GET /violations/:id/similar?limit=5
+ *
+ * Returns the cases most semantically similar to the given case, using
+ * pgvector cosine distance over the AI-verdict embedding stored on
+ * each row. The source case is excluded from results.
+ *
+ * The `distance` value is the raw cosine distance from pgvector
+ * (0 = identical, 2 = opposite). The frontend converts it to a
+ * 0–100 similarity score for display.
+ */
+app.get('/violations/:id/similar', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 25);
+
+    // Confirm the case exists and the caller is allowed to see it. We
+    // use the same ownership rules as the case-detail route — citizens
+    // can only query similars for their own case; admins can query any.
+    const result = await query('SELECT id, user_id, embedding FROM cases WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Case not found.' });
+    }
+    const caseRow        = result.rows[0];
+    const requestingUser = req.headers['x-user-id'];
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
+      return res.status(403).json({ error: 'You do not have access to this case.' });
+    }
+
+    // The case may not have an embedding yet (e.g. created before the
+    // embedding column existed, or analysis returned no usable text).
+    // Surface that explicitly so the frontend can show "no comparable
+    // cases yet" rather than a misleading empty list.
+    if (!caseRow.embedding) {
+      return res.status(200).json({
+        caseId:    req.params.id,
+        results:   [],
+        embedded:  false,
+        reason:    'This case has no embedding — semantic similarity not available.',
+      });
+    }
+
+    const results = await findSimilarCases(req.params.id, limit);
+    return res.status(200).json({
+      caseId:   req.params.id,
+      results,
+      embedded: true,
+      count:    results.length,
+    });
+  } catch (err) {
+    console.error('[violations/:id/similar]', err.message);
+    return res.status(500).json({ error: 'Failed to fetch similar cases.' });
   }
 });
 

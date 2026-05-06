@@ -301,6 +301,21 @@ app.get('/violations/audit/user/:userId',
 );
 
 /**
+ * GET /violations/:caseId/similar
+ * Returns the cases most semantically similar to the given case (vector
+ * search over the AI-verdict embedding stored on each row).
+ * Declared before /:caseId so the more specific pattern wins.
+ */
+app.get('/violations/:caseId/similar',
+  authenticate,
+  proxyAuthenticated((req) => {
+    const qs = new URLSearchParams(req.query).toString();
+    const base = `${VIOLATION_SERVICE_URL}/violations/${req.params.caseId}/similar`;
+    return qs ? `${base}?${qs}` : base;
+  }),
+);
+
+/**
  * GET /violations/:caseId/images/:index
  * Stream a single image attached to a case (binary).
  * Declared before the generic /:caseId route so Express picks the more
