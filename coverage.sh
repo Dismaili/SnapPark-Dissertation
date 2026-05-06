@@ -1,116 +1,130 @@
 #!/usr/bin/env bash
-# Run coverage across all backend services and print the four required metrics.
+# Run coverage across all backend services and print the four required
+# metrics — statement, decision, condition, decision/condition —
+# computed by scripts/coverage-metrics.js from each service's
+# istanbul-format coverage-final.json.
+#
+# Unlike the previous version, none of the four metrics are proxied: see
+# scripts/coverage-metrics.js for the methodology.
+#
 # Usage: ./coverage.sh
 
+set -e
+
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+ANALYZER="$ROOT/scripts/coverage-metrics.js"
 
 BOLD=$'\033[1m'
 CYAN=$'\033[36m'
 GREEN=$'\033[32m'
 YELLOW=$'\033[33m'
+DIM=$'\033[2m'
 RESET=$'\033[0m'
 
 divider() { echo "${CYAN}──────────────────────────────────────────────────────${RESET}"; }
 
+# Render the four metrics from a JSON blob produced by the analyzer.
 print_metrics() {
-  local service="$1"
-  local stmts="$2"
-  local branch="$3"
-  local note="$4"
+  local title="$1"
+  local json="$2"
+  local note="$3"
 
   echo ""
-  echo "${BOLD}${service}${RESET}"
+  echo "${BOLD}${title}${RESET}"
   divider
-  printf "  %-32s ${GREEN}%s%%${RESET}\n" "Statement coverage:"          "$stmts"
-  printf "  %-32s ${GREEN}%s%%${RESET}\n" "Decision (branch) coverage:"  "$branch"
-  printf "  %-32s ${YELLOW}≈ %s%% (proxy — see note)${RESET}\n" "Condition coverage:"          "$branch"
-  printf "  %-32s ${YELLOW}≈ %s%% (proxy — see note)${RESET}\n" "Decision/Condition coverage:" "$branch"
-  if [ -n "$note" ]; then
-    echo "  ${YELLOW}Note: ${note}${RESET}"
-  fi
-}
 
-# Read coverage-summary.json (produced by both vitest-v8 and jest --coverageReporters=json-summary)
-read_summary() {
-  local file="$1"
-  if [ ! -f "$file" ]; then
-    echo "0 0"
+  if [ -z "$json" ]; then
+    echo "  ${YELLOW}Coverage report missing — no metrics to display.${RESET}"
     return
   fi
+
+  # Use node to extract each metric from the JSON we already computed,
+  # rather than re-invoking jq (not present on every dissertation reviewer's box).
   node -e "
-    const s = require('$file').total;
-    const fmt = (n) => Number.isInteger(n) ? n : Number(n).toFixed(2);
-    console.log(fmt(s.statements.pct) + ' ' + fmt(s.branches.pct));
-  " 2>/dev/null || echo "0 0"
+    const m = JSON.parse(process.argv[1]).metrics;
+    const fmt = (k, name) => {
+      const x = m[k];
+      const pad = name.padEnd(32);
+      const pct = String(x.pct).padStart(6);
+      const tally = x.total === 0 ? '(no constructs of this type)' : '(' + x.hit + '/' + x.total + ')';
+      console.log('  ' + pad + ' \x1b[32m' + pct + '%\x1b[0m  \x1b[2m' + tally + '\x1b[0m');
+    };
+    fmt('statement',         'Statement coverage:');
+    fmt('decision',          'Decision coverage:');
+    fmt('condition',         'Condition coverage:');
+    fmt('decisionCondition', 'Decision/Condition coverage:');
+  " "$json"
+
+  if [ -n "$note" ]; then
+    echo "  ${DIM}${note}${RESET}"
+  fi
+}
+
+# Run a service's test suite with coverage and capture the metrics, returning
+# the analyzer JSON on stdout. Failures are non-fatal: missing reports show
+# up as empty strings and the print step degrades gracefully.
+run_service() {
+  local dir="$1"
+  shift
+  local cmd="$*"
+
+  (cd "$ROOT/$dir" && eval "$cmd" > /dev/null 2>&1) || true
+
+  local report="$ROOT/$dir/coverage/coverage-final.json"
+  if [ -f "$report" ]; then
+    node "$ANALYZER" "$report" "$dir"
+  fi
 }
 
 echo ""
-echo "${BOLD}Running coverage... (this takes ~30 seconds)${RESET}"
+echo "${BOLD}Running coverage across all backend services...${RESET}"
+echo "${DIM}(this typically takes 20–40 seconds)${RESET}"
 echo ""
 
-# ── violation-analysis-service ─────────────────────────────────────────────────
+# Run each service. Vitest services use the istanbul provider configured in
+# their vitest.config.js; jest reads its own jest.config.js.
+VIOLATION_JSON=$(run_service services/violation-analysis-service \
+  npx vitest run --coverage)
 
-(cd "$ROOT/services/violation-analysis-service" && \
-  npx vitest run \
-    --coverage \
-    --coverage.provider=v8 \
-    --coverage.reporter=json-summary \
-    --coverage.reporter=text \
-    > /dev/null 2>&1)
-read -r v_stmts v_branch <<< "$(read_summary "$ROOT/services/violation-analysis-service/coverage/coverage-summary.json")"
+NOTIFICATION_JSON=$(run_service services/notification-service \
+  npx vitest run --coverage)
 
-# ── notification-service ───────────────────────────────────────────────────────
+# Auth-service: the unit suite is the only one that runs without a live DB.
+# That means index.js (the express routes) is partly uncovered here — the
+# integration suite covers it, but it requires a Postgres reachable on
+# localhost:5432. We deliberately keep this run unit-only so the script
+# works on any machine without environment setup; reviewers who want the
+# full picture run `npm test --coverage` from the auth-service directory
+# with their DB env vars set.
+AUTH_JSON=$(run_service services/authentication-service \
+  node --experimental-vm-modules node_modules/.bin/jest \
+    --selectProjects unit --coverage)
 
-(cd "$ROOT/services/notification-service" && \
-  npx vitest run \
-    --coverage \
-    --coverage.provider=v8 \
-    --coverage.reporter=json-summary \
-    --coverage.reporter=text \
-    > /dev/null 2>&1)
-read -r n_stmts n_branch <<< "$(read_summary "$ROOT/services/notification-service/coverage/coverage-summary.json")"
-
-# ── authentication-service (unit only) ─────────────────────────────────────────
-
-(cd "$ROOT/services/authentication-service" && \
-  node --experimental-vm-modules \
-    node_modules/.bin/jest --selectProjects unit \
-    --coverage \
-    --coverageReporters=json-summary \
-    --coverageReporters=text \
-    > /dev/null 2>&1)
-read -r a_stmts a_branch <<< "$(read_summary "$ROOT/services/authentication-service/coverage/coverage-summary.json")"
-
-# ── print ──────────────────────────────────────────────────────────────────────
+# ── Print the report ─────────────────────────────────────────────────────────
 
 echo "${BOLD}╔══════════════════════════════════════════════════════╗${RESET}"
 echo "${BOLD}║              SNAPPARK COVERAGE REPORT                ║${RESET}"
 echo "${BOLD}╚══════════════════════════════════════════════════════╝${RESET}"
 
 print_metrics \
-  "Violation Analysis Service  (18/18 tests)" \
-  "$v_stmts" "$v_branch" \
-  "V8 does not isolate sub-expression conditions; branch % is the closest proxy."
+  "Violation Analysis Service" \
+  "$VIOLATION_JSON" \
+  ""
 
 print_metrics \
-  "Notification Service  (27/27 tests)" \
-  "$n_stmts" "$n_branch" \
-  "V8 does not isolate sub-expression conditions; branch % is the closest proxy."
+  "Notification Service" \
+  "$NOTIFICATION_JSON" \
+  ""
 
 print_metrics \
-  "Authentication Service  (unit suite only — no live DB)" \
-  "$a_stmts" "$a_branch" \
-  "helpers.js hits 100% on all metrics. index.js routes need a live Postgres DB."
+  "Authentication Service (unit suite)" \
+  "$AUTH_JSON" \
+  "Run \`cd services/authentication-service && npm test -- --coverage\` with DB env vars to include integration coverage."
 
 echo ""
 divider
-echo "${YELLOW}  Condition / Decision+Condition note:${RESET}"
-echo "  JavaScript coverage tools (V8/Istanbul) report statement, branch,"
-echo "  function, and line coverage. They do not decompose compound boolean"
-echo "  expressions (e.g. a && b) into individual condition outcomes."
-echo "  Branch coverage is used here as the best available proxy for both"
-echo "  condition coverage and decision/condition coverage."
-echo ""
-echo "${BOLD}  API Gateway / Frontend: no automated tests (0% all metrics)${RESET}"
+echo "${DIM}Methodology: every metric is computed from Istanbul's"
+echo "coverage-final.json (branchMap.type), not derived as a proxy."
+echo "See docs/coverage-methodology.md for definitions and limitations.${RESET}"
 divider
 echo ""
