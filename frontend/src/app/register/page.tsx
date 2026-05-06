@@ -3,9 +3,14 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
-import { tokenStore } from "@/lib/auth";
-import type { AuthResponse } from "@/lib/types";
 import { AuthShell } from "@/components/ui/AuthShell";
+
+type RegisterResponse = {
+  message: string;
+  email: string;
+  requiresVerification: true;
+  ttlMinutes: number;
+};
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -32,7 +37,7 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      const data = await apiFetch<AuthResponse>("/auth/register", {
+      const data = await apiFetch<RegisterResponse>("/auth/register", {
         method: "POST",
         auth: false,
         body: {
@@ -42,8 +47,7 @@ export default function RegisterPage() {
           lastName:  lastName.trim(),
         },
       });
-      tokenStore.set(data.token, data.refreshToken, data.user);
-      router.replace("/dashboard");
+      router.replace(`/verify-otp?email=${encodeURIComponent(data.email)}`);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Registration failed.");
     } finally {

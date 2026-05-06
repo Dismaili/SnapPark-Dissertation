@@ -1,17 +1,18 @@
 "use client";
 
+import { Suspense, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
 import { apiFetch, ApiError } from "@/lib/api";
 import { tokenStore } from "@/lib/auth";
 import type { AuthResponse } from "@/lib/types";
 import { AuthShell } from "@/components/ui/AuthShell";
-import { CheckCircle2, AlertTriangle } from "lucide-react";
+import { CheckCircle2 } from "lucide-react";
 
-export default function LoginPage() {
+function LoginInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const verified = searchParams.get("verified");
+  const reset = searchParams.get("reset");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -44,16 +45,10 @@ export default function LoginPage() {
       altHref="/register"
       altCta="Create an account"
     >
-      {verified === "true" && (
+      {reset === "success" && (
         <div className="mb-4 flex items-center gap-2 rounded-md bg-emerald-50 p-3 text-sm text-emerald-700">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
-          Email verified! You can now sign in.
-        </div>
-      )}
-      {verified === "invalid" && (
-        <div className="mb-4 flex items-center gap-2 rounded-md bg-red-50 p-3 text-sm text-red-700">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          Verification link is invalid or has expired.
+          Password updated. Please sign in with your new password.
         </div>
       )}
       <form onSubmit={onSubmit} className="space-y-4">
@@ -74,6 +69,15 @@ export default function LoginPage() {
           required
         />
 
+        <div className="flex justify-end">
+          <Link
+            href="/forgot-password"
+            className="text-sm font-medium text-emerald-600 hover:text-emerald-700"
+          >
+            Forgot password?
+          </Link>
+        </div>
+
         {error && (
           <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">
             {error}
@@ -89,6 +93,14 @@ export default function LoginPage() {
         </button>
       </form>
     </AuthShell>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
   );
 }
 

@@ -3,39 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { DashboardNav, useAuthGuard } from "@/components/layout/DashboardNav";
-import { apiFetch } from "@/lib/api";
-import { MailWarning, X, Menu } from "lucide-react";
-
-function VerificationBanner({ email }: { email: string }) {
-  const [sent, setSent] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
-
-  if (dismissed) return null;
-
-  const resend = async () => {
-    await apiFetch("/auth/resend-verification", { method: "POST" }).catch(() => {});
-    setSent(true);
-  };
-
-  return (
-    <div className="flex items-center gap-3 bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-sm text-amber-800">
-      <MailWarning className="h-4 w-4 shrink-0 text-amber-600" />
-      <span className="flex-1">
-        Please verify your email address. We sent a link to <strong>{email}</strong>.
-        {!sent ? (
-          <button onClick={resend} className="ml-2 underline hover:no-underline">
-            Resend email
-          </button>
-        ) : (
-          <span className="ml-2 font-medium text-amber-700">Email sent ✓</span>
-        )}
-      </span>
-      <button onClick={() => setDismissed(true)} className="text-amber-500 hover:text-amber-700">
-        <X className="h-4 w-4" />
-      </button>
-    </div>
-  );
-}
+import { X, Menu } from "lucide-react";
 
 export default function AppLayout({
   children,
@@ -99,9 +67,6 @@ export default function AppLayout({
           <span className="w-7" />
         </div>
 
-        {user.emailVerified === false && (
-          <VerificationBanner email={user.email} />
-        )}
         <main className="flex-1">{children}</main>
       </div>
     </div>
