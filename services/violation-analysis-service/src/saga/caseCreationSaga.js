@@ -1,6 +1,7 @@
-import { query, insertCaseImages, auditLog } from '../db.js';
+import { query, insertCaseImages, auditLog, setCaseEmbedding, clearCaseEmbedding } from '../db.js';
 import { publishStrict } from '../rabbitmq.js';
 import { runSaga } from './coordinator.js';
+import { generateEmbedding, buildEmbeddingInput } from '../embeddings.js';
 
 /**
  * Case-creation saga (orchestrated).
@@ -10,14 +11,16 @@ import { runSaga } from './coordinator.js';
  * every transition (see coordinator.js).
  *
  *   1. analyzeImage         — call Gemini (read-only, no compensation)
- *   2. persistCase          — INSERT cases   ↩ DELETE cases (cascade kills images)
- *   3. persistImages        — INSERT case_images (no separate compensation
- *                              — the FK CASCADE on persistCase covers it)
- *   4. recordAuditCreated   — append CaseCreated event ↩ append
+ *   2. persistCase          — INSERT cases    ↩ DELETE cases
+ *   3. persistImages        — INSERT case_images ↩ DELETE case_images
+ *   4. embedAndIndex        — embed verdict text + UPDATE embedding ↩ NULL
+ *                              the embedding column (the case row itself is
+ *                              rolled back by stepPersistCase if needed)
+ *   5. recordAuditCreated   — append CaseCreated event ↩ append
  *                              CaseCreationCompensated event (audit log
  *                              is append-only, so we record the rollback
  *                              rather than delete the original)
- *   5. dispatchNotification — publish case.created       ↩ publish case.cancelled
+ *   6. dispatchNotification — publish case.created       ↩ publish case.cancelled
  *
  * The notification step is the only one that crosses a service boundary.
  * Its compensation is *also* an event publish: the notification service
@@ -102,6 +105,50 @@ const stepPersistImages = {
   },
 };
 
+// Embed the AI's verdict text into a 768-D vector and store it on the
+// case row, so the cases table can later be searched by semantic
+// similarity (pgvector / cosine distance). Step is placed AFTER
+// persistImages so that an embedding failure does not block the
+// relational data from existing — the case is still useful without an
+// embedding; it just won't show up in similarity queries.
+//
+// Compensation deletes only the embedding column. The case row itself
+// is rolled back by stepPersistCase's compensation if a later step
+// fails, so we do NOT delete the case here.
+const stepEmbedAndIndex = {
+  name: 'embedAndIndex',
+  execute: async (ctx) => {
+    const text = buildEmbeddingInput({
+      violationType: ctx.savedCase.violation_type,
+      explanation:   ctx.savedCase.explanation,
+      licensePlate:  ctx.savedCase.license_plate,
+    });
+    if (!text) {
+      // Nothing useful to embed (e.g. analysis returned no explanation
+      // and no plate was supplied). Skip silently — the case row still
+      // exists and the embedding column remains NULL, which makes the
+      // case invisible to similarity search but preserves all other data.
+      return { embedded: false };
+    }
+    const embedding = await generateEmbedding(text);
+    await setCaseEmbedding(ctx.savedCase.id, embedding);
+    return { embedded: true, embeddingLength: embedding.length };
+  },
+  compensate: async (ctx) => {
+    if (!ctx.savedCase?.id) return;
+    // The case row is about to be deleted by stepPersistCase's
+    // compensation; clearing the embedding here is mostly a defence
+    // against future re-orderings of the saga steps. Errors here must
+    // not abort the compensation chain — the next compensation deletes
+    // the row anyway, which is the stronger guarantee.
+    try {
+      await clearCaseEmbedding(ctx.savedCase.id);
+    } catch (err) {
+      console.warn(`[saga ${ctx.sagaId}] clearCaseEmbedding non-fatal:`, err.message);
+    }
+  },
+};
+
 const stepRecordAuditCreated = {
   name: 'recordAuditCreated',
   execute: async (ctx) => {
@@ -177,6 +224,7 @@ export const buildCaseCreationSteps = ({ analyser }) => [
   stepAnalyzeImage(analyser),
   stepPersistCase,
   stepPersistImages,
+  stepEmbedAndIndex,
   stepRecordAuditCreated,
   stepDispatchNotification,
 ];
