@@ -95,6 +95,26 @@ export const initDB = async () => {
     -- Index for efficient clean-up of a user's tokens on logout
     CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id
       ON refresh_tokens (user_id);
+
+    -- One-time passwords for email verification and password reset.
+    -- A single table serves both flows; the 'purpose' column distinguishes them
+    -- so the same generate/verify code path can be reused.
+    CREATE TABLE IF NOT EXISTS otps (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      purpose     VARCHAR(32) NOT NULL,
+      code_hash   VARCHAR(128) NOT NULL,
+      expires_at  TIMESTAMP WITH TIME ZONE NOT NULL,
+      attempts    INTEGER NOT NULL DEFAULT 0,
+      consumed_at TIMESTAMP WITH TIME ZONE,
+      created_at  TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+    -- Look up the active OTP for a (user, purpose) pair. Partial index on the
+    -- subset that matters: not-yet-consumed rows.
+    CREATE INDEX IF NOT EXISTS idx_otps_active
+      ON otps (user_id, purpose)
+      WHERE consumed_at IS NULL;
   `);
 
   // Promote any pre-configured admin emails (comma-separated in ADMIN_EMAILS).
