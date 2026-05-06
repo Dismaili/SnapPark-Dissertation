@@ -27,7 +27,17 @@ export const query = (text, params) => pool.query(text, params);
  *   pending → expired (auto-cleanup after threshold)
  *   completed → cancelled
  */
+// Embedding dimension. text-embedding-004 returns 768-D vectors.
+// Centralised here so the schema migration, the embedding module, and
+// any future model swap all reference the same constant.
+export const EMBEDDING_DIM = 768;
+
 export const initDB = async () => {
+  // Enable pgvector. Idempotent — no-op once installed. Without this,
+  // the `vector` type does not exist and the embedding column below
+  // would fail to create.
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS cases (
       id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -156,6 +166,31 @@ export const initDB = async () => {
     $$;
   `);
 
+  // ── Polyglot persistence: vector embeddings ────────────────────────────────
+  // The cases table holds standard relational columns (status, confidence,
+  // license_plate, …) and a 768-dimensional embedding of the AI's
+  // explanation/verdict text. The embedding column lives in the same row
+  // as the relational data, so similarity search and exact-match queries
+  // operate on the same source of truth.
+  //
+  // The HNSW index uses cosine distance — appropriate for normalised
+  // text-embedding vectors. lists/m/ef_construction are pgvector defaults
+  // tuned for "tens of thousands of rows" which comfortably covers the
+  // dissertation demo and any plausible single-instance production load.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_name = 'cases' AND column_name = 'embedding') THEN
+        ALTER TABLE cases ADD COLUMN embedding vector(${EMBEDDING_DIM});
+      END IF;
+    END
+    $$;
+
+    CREATE INDEX IF NOT EXISTS idx_cases_embedding_hnsw
+      ON cases USING hnsw (embedding vector_cosine_ops);
+  `);
+
   console.log('[DB] Schema initialised successfully');
 };
 
@@ -245,6 +280,83 @@ export const getAuditLog = async (caseId) => {
     [caseId]
   );
   return result.rows;
+};
+
+// ─── Vector embeddings (pgvector polyglot persistence) ──────────────────────
+
+/**
+ * Convert a JS number array to pgvector's textual representation.
+ * pgvector accepts strings of the form "[0.1,0.2,…]" for inserts and
+ * comparisons; the node-postgres driver does NOT serialise typed arrays
+ * for us, so we do the conversion explicitly to avoid silent failures.
+ */
+const toPgvector = (vec) => `[${vec.join(',')}]`;
+
+/**
+ * Persist an embedding for an existing case. The embedding is computed
+ * from the AI verdict text (see embeddings.js) and is deliberately stored
+ * AFTER the case row exists, so a Gemini-embedding failure leaves the
+ * relational data intact (the saga's embedAndIndex step compensates by
+ * clearing the column rather than the whole case).
+ */
+export const setCaseEmbedding = async (caseId, embedding) => {
+  if (!Array.isArray(embedding) || embedding.length !== EMBEDDING_DIM) {
+    throw new Error(`Invalid embedding: expected array of ${EMBEDDING_DIM} numbers`);
+  }
+  await query(
+    `UPDATE cases SET embedding = $1::vector WHERE id = $2`,
+    [toPgvector(embedding), caseId]
+  );
+};
+
+export const clearCaseEmbedding = async (caseId) => {
+  await query(`UPDATE cases SET embedding = NULL WHERE id = $1`, [caseId]);
+};
+
+/**
+ * Find the N cases most semantically similar to the given case, ordered
+ * by cosine distance ascending (smaller = more similar). The source case
+ * is excluded from results so the caller doesn't have to filter it out.
+ *
+ * Returns rows with a `distance` column (0 = identical, 1 = orthogonal,
+ * 2 = opposite) so the UI can render relative similarity scores.
+ *
+ * Note: requires the source case to have a non-null embedding. Callers
+ * that want a "find similar to a query string" flavour can compute the
+ * query embedding directly and call findSimilarByEmbedding() below.
+ */
+export const findSimilarCases = async (caseId, limit = 5) => {
+  const r = await query(
+    `SELECT c.id, c.user_id, c.status, c.violation_confirmed, c.violation_type,
+            c.confidence, c.explanation, c.license_plate, c.created_at,
+            c.embedding <=> src.embedding AS distance
+       FROM cases c, cases src
+      WHERE src.id = $1
+        AND src.embedding IS NOT NULL
+        AND c.id <> src.id
+        AND c.embedding IS NOT NULL
+      ORDER BY distance ASC
+      LIMIT $2`,
+    [caseId, limit]
+  );
+  return r.rows;
+};
+
+export const findSimilarByEmbedding = async (embedding, limit = 5) => {
+  if (!Array.isArray(embedding) || embedding.length !== EMBEDDING_DIM) {
+    throw new Error(`Invalid embedding: expected array of ${EMBEDDING_DIM} numbers`);
+  }
+  const r = await query(
+    `SELECT id, user_id, status, violation_confirmed, violation_type,
+            confidence, explanation, license_plate, created_at,
+            embedding <=> $1::vector AS distance
+       FROM cases
+      WHERE embedding IS NOT NULL
+      ORDER BY distance ASC
+      LIMIT $2`,
+    [toPgvector(embedding), limit]
+  );
+  return r.rows;
 };
 
 /**

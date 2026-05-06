@@ -23,7 +23,11 @@ services:
       - snappark
 
   postgres_case:
-    image: postgres:15-alpine
+    # pgvector image = vanilla Postgres 15 with the pgvector extension
+    # pre-installed. The violation-analysis service runs `CREATE EXTENSION
+    # IF NOT EXISTS vector` on boot to enable vector similarity search.
+    # See docs/polyglot-persistence.md for the rationale.
+    image: pgvector/pgvector:pg15
     container_name: snappark_case_db
     environment:
       POSTGRES_USER: snappark_user
