@@ -72,10 +72,7 @@ export default function Landing() {
         <div className="mx-auto max-w-6xl px-6 py-20 md:py-28">
           <div className="grid items-center gap-12 md:grid-cols-2">
             <div>
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700">
-                <Sparkles className="h-3 w-3" /> AI-powered parking enforcement
-              </span>
-              <h1 className="mt-5 text-4xl font-bold leading-tight tracking-tight text-slate-900 md:text-6xl">
+              <h1 className="text-4xl font-bold leading-tight tracking-tight text-slate-900 md:text-6xl">
                 Report illegal parking with a single photo
               </h1>
               <p className="mt-6 text-lg leading-relaxed text-slate-600">
