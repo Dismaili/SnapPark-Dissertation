@@ -34,7 +34,8 @@ afterAll(async () => {
   await query('DELETE FROM otps');
   await query('DELETE FROM refresh_tokens');
   await query('DELETE FROM users');
-  await pool.end();
+  // pool.end() lives in a single globalTeardown so files that share the pool
+  // (auth.test.js, profile.test.js, …) don't close it out from under each other.
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
