@@ -7,9 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest --runInBand",
     "test:unit": "node --experimental-vm-modules node_modules/.bin/jest --selectProjects unit",
-    "test:integration": "node --experimental-vm-modules node_modules/.bin/jest --selectProjects integration"
+    "test:integration": "node --experimental-vm-modules node_modules/.bin/jest --selectProjects integration --runInBand"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -29,6 +29,8 @@ export default {
       transform: {},
       // Integration tests run sequentially to avoid DB conflicts
       maxWorkers: 1,
+      // Close the shared pg pool exactly once after all integration files run.
+      globalTeardown: '<rootDir>/tests/integration/teardown.js',
     },
   ],
 };
