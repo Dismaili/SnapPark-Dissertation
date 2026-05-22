@@ -501,11 +501,17 @@ app.use((_req, res) => {
   res.status(404).json({ error: 'Route not found.' });
 });
 
+// ─── Export for testing ───────────────────────────────────────────────────────
+
+export { app };
+
 // ─── Start ────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
-  console.log(`[api-gateway] Listening on port ${PORT}`);
-  console.log(`[api-gateway] Auth service:         ${AUTH_SERVICE_URL}`);
-  console.log(`[api-gateway] Violation service:    ${VIOLATION_SERVICE_URL}`);
-  console.log(`[api-gateway] Notification service: ${NOTIFICATION_SERVICE_URL}`);
-});
+if (process.argv[1]?.includes('index.js')) {
+  app.listen(PORT, () => {
+    console.log(`[api-gateway] Listening on port ${PORT}`);
+    console.log(`[api-gateway] Auth service:         ${AUTH_SERVICE_URL}`);
+    console.log(`[api-gateway] Violation service:    ${VIOLATION_SERVICE_URL}`);
+    console.log(`[api-gateway] Notification service: ${NOTIFICATION_SERVICE_URL}`);
+  });
+}

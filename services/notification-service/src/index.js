@@ -261,6 +261,10 @@ app.get('/notifications/delivery-log/:caseId', async (req, res) => {
   }
 });
 
+// ─── Export for testing ──────────────────────────────────────────────────────
+
+export { app, handleCaseCreated, handleCaseReported, handleCaseResolved };
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 const start = async () => {
@@ -281,7 +285,9 @@ const start = async () => {
   });
 };
 
-start().catch((err) => {
-  console.error('[notification-service] Failed to start:', err.message);
-  process.exit(1);
-});
+if (process.argv[1]?.includes('index.js')) {
+  start().catch((err) => {
+    console.error('[notification-service] Failed to start:', err.message);
+    process.exit(1);
+  });
+}
