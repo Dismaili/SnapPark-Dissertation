@@ -33,3 +33,4 @@ tmp/
 .env.production
 secrets/
 deployment/kubernetes/secrets.yaml
+.claude/
