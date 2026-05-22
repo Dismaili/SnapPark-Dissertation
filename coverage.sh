@@ -4,8 +4,8 @@
 # computed by scripts/coverage-metrics.js from each service's
 # istanbul-format coverage-final.json.
 #
-# Unlike the previous version, none of the four metrics are proxied: see
-# scripts/coverage-metrics.js for the methodology.
+# None of the four metrics are proxied: see scripts/coverage-metrics.js
+# for the methodology.
 #
 # Usage: ./coverage.sh
 
@@ -38,8 +38,6 @@ print_metrics() {
     return
   fi
 
-  # Use node to extract each metric from the JSON we already computed,
-  # rather than re-invoking jq (not present on every dissertation reviewer's box).
   node -e "
     const m = JSON.parse(process.argv[1]).metrics;
     const fmt = (k, name) => {
@@ -76,29 +74,61 @@ run_service() {
   fi
 }
 
+# Detect whether the auth-service Postgres is reachable. If so we run the
+# integration suite (which exercises ~80% of routes); otherwise we fall back
+# to the unit-only suite so the script still works on machines that don't
+# have a database stood up.
+auth_db_reachable() {
+  local host="${DB_HOST:-localhost}"
+  local port="${DB_PORT:-5432}"
+  if command -v nc > /dev/null 2>&1; then
+    nc -z "$host" "$port" > /dev/null 2>&1
+  else
+    # Fall back to a python one-liner if nc is not installed.
+    python3 - <<EOF > /dev/null 2>&1
+import socket, sys
+s = socket.socket()
+s.settimeout(1)
+try:
+    s.connect(("$host", $port))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+EOF
+  fi
+}
+
 echo ""
-echo "${BOLD}Running coverage across all backend services...${RESET}"
-echo "${DIM}(this typically takes 20–40 seconds)${RESET}"
+echo "${BOLD}Running coverage across the frontend, three backend services and the api-gateway...${RESET}"
+echo "${DIM}(this typically takes 30–60 seconds)${RESET}"
 echo ""
 
-# Run each service. Vitest services use the istanbul provider configured in
-# their vitest.config.js; jest reads its own jest.config.js.
 VIOLATION_JSON=$(run_service services/violation-analysis-service \
   npx vitest run --coverage)
 
 NOTIFICATION_JSON=$(run_service services/notification-service \
   npx vitest run --coverage)
 
-# Auth-service: the unit suite is the only one that runs without a live DB.
-# That means index.js (the express routes) is partly uncovered here — the
-# integration suite covers it, but it requires a Postgres reachable on
-# localhost:5432. We deliberately keep this run unit-only so the script
-# works on any machine without environment setup; reviewers who want the
-# full picture run `npm test --coverage` from the auth-service directory
-# with their DB env vars set.
-AUTH_JSON=$(run_service services/authentication-service \
-  node --experimental-vm-modules node_modules/.bin/jest \
-    --selectProjects unit --coverage)
+GATEWAY_JSON=$(run_service services/api-gateway \
+  npx vitest run --coverage)
+
+FRONTEND_JSON=$(run_service frontend \
+  npx vitest run --coverage)
+
+AUTH_NOTE=""
+if auth_db_reachable; then
+  AUTH_NOTE="Includes unit + integration suite (Postgres detected on ${DB_HOST:-localhost}:${DB_PORT:-5432})."
+  AUTH_JSON=$(run_service services/authentication-service \
+    "DB_HOST=${DB_HOST:-localhost} DB_PORT=${DB_PORT:-5432} \
+     DB_NAME=${DB_NAME:-auth_db} DB_USER=${DB_USER:-postgres} DB_PASSWORD=${DB_PASSWORD:-postgres} \
+     JWT_SECRET=${JWT_SECRET:-dev-secret-key} JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-dev-refresh-secret-key} \
+     node --experimental-vm-modules node_modules/.bin/jest --runInBand --coverage")
+else
+  AUTH_NOTE="Unit suite only — Postgres not reachable on ${DB_HOST:-localhost}:${DB_PORT:-5432}. Start it (\`docker compose up -d auth-db\`) for full coverage."
+  AUTH_JSON=$(run_service services/authentication-service \
+    node --experimental-vm-modules node_modules/.bin/jest \
+      --selectProjects unit --coverage)
+fi
 
 # ── Print the report ─────────────────────────────────────────────────────────
 
@@ -117,9 +147,19 @@ print_metrics \
   ""
 
 print_metrics \
-  "Authentication Service (unit suite)" \
+  "API Gateway" \
+  "$GATEWAY_JSON" \
+  ""
+
+print_metrics \
+  "Authentication Service" \
   "$AUTH_JSON" \
-  "Run \`cd services/authentication-service && npm test -- --coverage\` with DB env vars to include integration coverage."
+  "$AUTH_NOTE"
+
+print_metrics \
+  "Frontend (lib + components)" \
+  "$FRONTEND_JSON" \
+  "Page components (src/app/**) are excluded; they integrate Next.js server-only utilities and are covered by the e2e suite."
 
 echo ""
 divider
