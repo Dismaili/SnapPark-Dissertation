@@ -40,7 +40,11 @@ vi.mock('@/lib/auth', () => ({
 // resolution mechanics in jsdom.
 vi.mock('lucide-react', () => {
   const Stub = () => <span data-testid="icon" />;
-  return { Camera: Stub, ListChecks: Stub, Bell: Stub, Settings: Stub, LogOut: Stub, ShieldCheck: Stub };
+  // All icons used across DashboardNav and the ThemeToggle it renders.
+  return {
+    Camera: Stub, ListChecks: Stub, Bell: Stub, Settings: Stub,
+    LogOut: Stub, ShieldCheck: Stub, Sun: Stub, Moon: Stub,
+  };
 });
 
 const { DashboardNav } = await import('../../src/components/layout/DashboardNav');

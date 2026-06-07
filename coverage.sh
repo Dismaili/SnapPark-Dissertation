@@ -120,7 +120,7 @@ if auth_db_reachable; then
   AUTH_NOTE="Includes unit + integration suite (Postgres detected on ${DB_HOST:-localhost}:${DB_PORT:-5432})."
   AUTH_JSON=$(run_service services/authentication-service \
     "DB_HOST=${DB_HOST:-localhost} DB_PORT=${DB_PORT:-5432} \
-     DB_NAME=${DB_NAME:-auth_db} DB_USER=${DB_USER:-postgres} DB_PASSWORD=${DB_PASSWORD:-postgres} \
+     DB_NAME=${DB_NAME:-snappark_auth} DB_USER=${DB_USER:-snappark_user} DB_PASSWORD=${DB_PASSWORD:-snappark_password} \
      JWT_SECRET=${JWT_SECRET:-dev-secret-key} JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-dev-refresh-secret-key} \
      node --experimental-vm-modules node_modules/.bin/jest --runInBand --coverage")
 else

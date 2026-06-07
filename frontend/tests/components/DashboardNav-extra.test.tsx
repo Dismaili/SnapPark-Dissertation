@@ -34,7 +34,11 @@ vi.mock('@/lib/auth', () => ({
 
 vi.mock('lucide-react', () => {
   const Stub = () => <span />;
-  return { Camera: Stub, ListChecks: Stub, Bell: Stub, Settings: Stub, LogOut: Stub, ShieldCheck: Stub };
+  // All icons used across DashboardNav and the ThemeToggle it renders.
+  return {
+    Camera: Stub, ListChecks: Stub, Bell: Stub, Settings: Stub,
+    LogOut: Stub, ShieldCheck: Stub, Sun: Stub, Moon: Stub,
+  };
 });
 
 const { DashboardNav, useAuthGuard } = await import('../../src/components/layout/DashboardNav');
@@ -72,7 +76,7 @@ describe('DashboardNav — additional branches', () => {
     mockPathnameValue = '/upload/wizard';
     render(wrap(<DashboardNav user={{ id: 'u', email: 'u@x.c', role: 'citizen' }} />));
     const link = screen.getByText('New report').closest('a')!;
-    expect(link.className).toMatch(/emerald/);
+    expect(link.className).toMatch(/brand/);
   });
 });
 

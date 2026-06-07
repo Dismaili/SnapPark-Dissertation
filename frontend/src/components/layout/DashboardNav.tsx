@@ -8,6 +8,7 @@ import { tokenStore, type AuthUser } from "@/lib/auth";
 import { apiFetch } from "@/lib/api";
 import { Camera, ListChecks, Bell, Settings, LogOut, ShieldCheck } from "lucide-react";
 import clsx from "clsx";
+import { ThemeToggle } from "@/components/ui/ThemeToggle";
 
 const CITIZEN_NAV = [
   { href: "/dashboard", label: "My cases", icon: ListChecks },
@@ -68,16 +69,19 @@ export function DashboardNav({
   return (
     <aside
       className={clsx(
-        "flex w-60 flex-col border-r border-slate-200 bg-white",
+        "flex w-60 flex-col border-r border-line bg-card",
         className,
       )}
     >
-      <Link
-        href="/dashboard"
-        className="border-b border-slate-200 px-5 py-5 text-xl font-semibold tracking-tight text-slate-900"
-      >
-        Snap<span className="text-emerald-600">Park</span>
-      </Link>
+      <div className="flex items-center justify-between border-b border-line px-5 py-5">
+        <Link
+          href="/dashboard"
+          className="text-xl font-semibold tracking-tight text-fg"
+        >
+          Snap<span className="text-brand">Park</span>
+        </Link>
+        <ThemeToggle />
+      </div>
 
       <nav className="flex-1 space-y-1 p-3">
         {NAV.map((item) => {
@@ -97,14 +101,14 @@ export function DashboardNav({
               className={clsx(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium",
                 active
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "text-slate-700 hover:bg-slate-100",
+                  ? "bg-brand-subtle text-brand-fg"
+                  : "text-fg-soft hover:bg-muted",
               )}
             >
               <Icon className="h-4 w-4" />
               <span className="flex-1">{item.label}</span>
               {showBadge && (
-                <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-xs font-semibold text-white">
+                <span className="rounded-full bg-brand px-2 py-0.5 text-xs font-semibold text-white">
                   {unread.unreadCount}
                 </span>
               )}
@@ -113,17 +117,17 @@ export function DashboardNav({
         })}
       </nav>
 
-      <div className="border-t border-slate-200 p-3">
+      <div className="border-t border-line p-3">
         <div className="px-3 py-2 text-xs">
-          <div className="font-semibold text-slate-700">
+          <div className="font-semibold text-fg-soft">
             {user.firstName ? `Hi, ${user.firstName}` : "Signed in"}
           </div>
-          <div className="truncate text-slate-500">{user.email}</div>
+          <div className="truncate text-muted-fg">{user.email}</div>
         </div>
         <button
           onClick={onLogout}
           disabled={logging}
-          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 disabled:opacity-60"
+          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-fg hover:bg-muted disabled:opacity-60"
         >
           <LogOut className="h-4 w-4" />
           {logging ? "Signing out…" : "Sign out"}

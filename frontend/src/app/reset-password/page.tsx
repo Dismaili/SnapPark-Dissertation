@@ -117,27 +117,27 @@ function ResetPasswordInner() {
         />
 
         {error && (
-          <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>
+          <p className="rounded-md bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>
         )}
         {info && (
-          <p className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-700">{info}</p>
+          <p className="rounded-md bg-brand-subtle p-3 text-sm text-brand-fg">{info}</p>
         )}
 
         <button
           type="submit"
           disabled={submitting}
-          className="w-full rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="w-full rounded-md bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? "Updating password…" : "Set new password"}
         </button>
 
-        <p className="text-center text-sm text-slate-600">
+        <p className="text-center text-sm text-muted-fg">
           Didn&apos;t receive a code?{" "}
           <button
             type="button"
             onClick={onResend}
             disabled={resending}
-            className="font-medium text-emerald-600 hover:text-emerald-700 disabled:opacity-60"
+            className="font-medium text-brand hover:text-brand-fg disabled:opacity-60"
           >
             {resending ? "Sending…" : "Resend"}
           </button>
@@ -169,14 +169,14 @@ function Field({
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange" | "value">) {
   return (
     <label className="block">
-      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className="text-sm font-medium text-fg-soft">{label}</span>
       <input
         {...rest}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+        className="mt-1 block w-full rounded-md border border-line-strong px-3 py-2 text-sm shadow-sm placeholder:text-muted-fg focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
       />
-      {hint && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
+      {hint && <span className="mt-1 block text-xs text-muted-fg">{hint}</span>}
     </label>
   );
 }

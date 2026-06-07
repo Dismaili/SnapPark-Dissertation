@@ -77,7 +77,7 @@ export function OtpInput({ value, onChange, length = 4, autoFocus = true, disabl
           value={value[i] ?? ""}
           onChange={(e) => handleChange(i, e.target.value)}
           onKeyDown={(e) => handleKeyDown(i, e)}
-          className="h-14 w-12 rounded-md border border-slate-300 text-center text-2xl font-semibold text-slate-900 shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:bg-slate-100"
+          className="h-14 w-12 rounded-md border border-line-strong text-center text-2xl font-semibold text-fg shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:bg-muted"
         />
       ))}
     </div>

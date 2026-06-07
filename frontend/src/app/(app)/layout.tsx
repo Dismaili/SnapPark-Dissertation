@@ -15,14 +15,14 @@ export default function AppLayout({
 
   if (!user) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-sm text-slate-500">
+      <div className="flex min-h-screen items-center justify-center text-sm text-muted-fg">
         Loading…
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
+    <div className="flex min-h-screen bg-app">
       {/* Desktop sidebar */}
       <DashboardNav user={user} className="hidden md:flex" />
 
@@ -30,7 +30,7 @@ export default function AppLayout({
       {drawerOpen && (
         <div className="fixed inset-0 z-40 md:hidden">
           <div
-            className="absolute inset-0 bg-slate-900/40"
+            className="absolute inset-0 bg-black/50"
             onClick={() => setDrawerOpen(false)}
             aria-hidden
           />
@@ -42,7 +42,7 @@ export default function AppLayout({
             />
             <button
               onClick={() => setDrawerOpen(false)}
-              className="absolute right-2 top-3 rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+              className="absolute right-2 top-3 rounded-md p-1.5 text-muted-fg hover:bg-muted"
               aria-label="Close menu"
             >
               <X className="h-5 w-5" />
@@ -53,16 +53,16 @@ export default function AppLayout({
 
       <div className="flex flex-1 flex-col overflow-auto">
         {/* Mobile top bar */}
-        <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 md:hidden">
+        <div className="flex items-center justify-between border-b border-line bg-card px-4 py-3 md:hidden">
           <button
             onClick={() => setDrawerOpen(true)}
-            className="-ml-1 rounded-md p-1.5 text-slate-700 hover:bg-slate-100"
+            className="-ml-1 rounded-md p-1.5 text-fg-soft hover:bg-muted"
             aria-label="Open menu"
           >
             <Menu className="h-5 w-5" />
           </button>
-          <Link href="/dashboard" className="text-lg font-semibold tracking-tight text-slate-900">
-            Snap<span className="text-emerald-600">Park</span>
+          <Link href="/dashboard" className="text-lg font-semibold tracking-tight text-fg">
+            Snap<span className="text-brand">Park</span>
           </Link>
           <span className="w-7" />
         </div>

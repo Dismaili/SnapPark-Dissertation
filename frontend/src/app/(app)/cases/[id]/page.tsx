@@ -87,7 +87,7 @@ export default function CaseDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center text-sm text-slate-500">
+      <div className="flex min-h-[40vh] items-center justify-center text-sm text-muted-fg">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading case…
       </div>
     );
@@ -96,7 +96,7 @@ export default function CaseDetailPage() {
   if (error || !caseData) {
     return (
       <div className="p-4 sm:p-6 md:p-8">
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <div className="rounded-lg border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-4 text-sm text-red-700 dark:text-red-300">
           {error instanceof ApiError && error.status === 404
             ? "Case not found."
             : "Couldn't load case details."}
@@ -115,7 +115,7 @@ export default function CaseDetailPage() {
         action={
           <Link
             href="/dashboard"
-            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100"
+            className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-card px-3 py-1.5 text-sm text-fg-soft hover:bg-muted"
           >
             <ArrowLeft className="h-3.5 w-3.5" /> Back
           </Link>
@@ -127,12 +127,12 @@ export default function CaseDetailPage() {
           {/* Photo gallery — shows the image(s) the citizen submitted so the
               AI verdict can be eyeballed against the actual evidence. */}
           {Array.isArray(c.images) && c.images.length > 0 && (
-            <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
+              <h2 className="flex items-center gap-2 text-sm font-semibold text-fg">
                 <ImageIcon className="h-4 w-4" />
                 Submitted photo{c.images.length > 1 ? "s" : ""}
               </h2>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted-fg">
                 The image{c.images.length > 1 ? "s" : ""} you uploaded for this case.
               </p>
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -148,54 +148,54 @@ export default function CaseDetailPage() {
             </section>
           )}
 
-          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+          <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
             <div className="flex flex-wrap items-center gap-3">
               <StatusBadge status={c.status} />
               {c.violation_confirmed != null &&
                 (c.violation_confirmed ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-200">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-red-50 dark:bg-red-950/40 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-300 ring-1 ring-inset ring-red-200 dark:ring-red-900">
                     <AlertTriangle className="h-3 w-3" />
                     {c.violation_type || "Violation"}
                   </span>
                 ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-brand-subtle px-2.5 py-0.5 text-xs font-medium text-brand-fg ring-1 ring-inset ring-brand/40">
                     <CheckCircle2 className="h-3 w-3" /> No violation
                   </span>
                 ))}
               {c.confidence != null && (
-                <span className="text-xs text-slate-500">
+                <span className="text-xs text-muted-fg">
                   Confidence {formatPercent(c.confidence)}
                 </span>
               )}
             </div>
 
-            <h2 className="mt-6 text-sm font-semibold text-slate-900">
+            <h2 className="mt-6 text-sm font-semibold text-fg">
               AI explanation
             </h2>
-            <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">
+            <p className="mt-2 whitespace-pre-line text-sm leading-6 text-fg-soft">
               {c.explanation || "No explanation provided."}
             </p>
           </section>
 
           {/* Similar cases (vector similarity over Gemini-verdict embeddings) */}
-          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-900">Similar cases</h2>
-            <p className="mt-1 text-xs text-slate-500">
+          <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
+            <h2 className="text-sm font-semibold text-fg">Similar cases</h2>
+            <p className="mt-1 text-xs text-muted-fg">
               Found by vector similarity over the AI&apos;s verdict text (pgvector,
               cosine distance).
             </p>
             <ul className="mt-4 space-y-2">
               {!similar && (
-                <li className="text-sm text-slate-500">Loading…</li>
+                <li className="text-sm text-muted-fg">Loading…</li>
               )}
               {similar && similar.embedded === false && (
-                <li className="text-sm text-slate-500">
+                <li className="text-sm text-muted-fg">
                   This case has no embedding yet — semantic similarity is not
                   available.
                 </li>
               )}
               {similar && similar.embedded && similar.results.length === 0 && (
-                <li className="text-sm text-slate-500">
+                <li className="text-sm text-muted-fg">
                   No comparable prior cases yet.
                 </li>
               )}
@@ -207,23 +207,23 @@ export default function CaseDetailPage() {
                   <li key={s.id}>
                     <Link
                       href={`/cases/${s.id}`}
-                      className="flex items-center justify-between rounded-md bg-slate-50 px-3 py-2 text-sm hover:bg-slate-100"
+                      className="flex items-center justify-between rounded-md bg-app px-3 py-2 text-sm hover:bg-muted"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium text-slate-900">
+                        <div className="truncate font-medium text-fg">
                           {s.violation_type || "No violation detected"}
                           {s.license_plate && (
-                            <span className="ml-2 text-xs text-slate-500">
+                            <span className="ml-2 text-xs text-muted-fg">
                               {s.license_plate}
                             </span>
                           )}
                         </div>
-                        <div className="text-xs text-slate-500">
+                        <div className="text-xs text-muted-fg">
                           {formatDate(s.created_at)}
                         </div>
                       </div>
                       <span
-                        className="ml-3 shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700"
+                        className="ml-3 shrink-0 rounded-full bg-brand-subtle px-2 py-0.5 text-xs font-medium text-brand-fg"
                         title={`cosine distance ${s.distance.toFixed(3)}`}
                       >
                         {score}% match
@@ -237,28 +237,28 @@ export default function CaseDetailPage() {
 
           {/* Audit trail — admin only */}
           {isAdmin && (
-            <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-sm font-semibold text-slate-900">
+            <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
+              <h2 className="text-sm font-semibold text-fg">
                 Audit trail
               </h2>
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-muted-fg">
                 Every state change recorded for this case.
               </p>
               <ol className="mt-4 space-y-3">
                 {(audit || []).length === 0 && (
-                  <li className="text-sm text-slate-500">No audit events.</li>
+                  <li className="text-sm text-muted-fg">No audit events.</li>
                 )}
                 {(audit || []).map((e) => (
                   <li
                     key={e.id}
-                    className="flex items-start gap-3 rounded-md bg-slate-50 p-3 text-sm"
+                    className="flex items-start gap-3 rounded-md bg-app p-3 text-sm"
                   >
-                    <span className="mt-0.5 inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                    <span className="mt-0.5 inline-block h-2 w-2 rounded-full bg-brand" />
                     <div className="flex-1">
-                      <div className="font-medium text-slate-900">
+                      <div className="font-medium text-fg">
                         {e.event_type}
                       </div>
-                      <div className="text-xs text-slate-500">
+                      <div className="text-xs text-muted-fg">
                         {formatDate(e.created_at)}
                       </div>
                     </div>
@@ -270,8 +270,8 @@ export default function CaseDetailPage() {
         </div>
 
         <div className="space-y-6">
-          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-900">Details</h2>
+          <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
+            <h2 className="text-sm font-semibold text-fg">Details</h2>
             <dl className="mt-4 space-y-3 text-sm">
               <DetailRow label="Case ID" value={<code className="font-mono text-xs">{c.id}</code>} />
               <DetailRow label="Images" value={String(c.image_count)} />
@@ -284,12 +284,12 @@ export default function CaseDetailPage() {
             </dl>
           </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-sm font-semibold text-slate-900">Actions</h2>
+          <section className="rounded-lg border border-line bg-card p-6 shadow-sm">
+            <h2 className="text-sm font-semibold text-fg">Actions</h2>
 
             {/* Citizen view — violation confirmed but pending admin action */}
             {!isAdmin && c.status === "completed" && c.violation_confirmed && (
-              <p className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700 ring-1 ring-inset ring-amber-200">
+              <p className="mt-4 rounded-md bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 ring-1 ring-inset ring-amber-200 dark:ring-amber-900">
                 Violation confirmed. An administrator will review and forward this case to the authorities.
               </p>
             )}
@@ -299,7 +299,7 @@ export default function CaseDetailPage() {
               <button
                 onClick={() => reportMutation.mutate()}
                 disabled={reportMutation.isPending}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
               >
                 <Send className="h-4 w-4" />
                 {reportMutation.isPending ? "Reporting…" : "Report to authority"}
@@ -310,7 +310,7 @@ export default function CaseDetailPage() {
               <button
                 onClick={() => resolveMutation.mutate()}
                 disabled={resolveMutation.isPending}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
               >
                 <ShieldCheck className="h-4 w-4" />
                 {resolveMutation.isPending
@@ -328,7 +328,7 @@ export default function CaseDetailPage() {
                     cancelMutation.mutate();
                 }}
                 disabled={cancelMutation.isPending}
-                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-md border border-red-300 dark:border-red-800 bg-card px-4 py-2 text-sm font-medium text-red-700 dark:text-red-300 hover:bg-red-50 dark:bg-red-950/40 dark:hover:bg-red-950/40 disabled:opacity-60"
               >
                 <Trash2 className="h-4 w-4" />
                 {cancelMutation.isPending ? "Cancelling…" : "Cancel case"}
@@ -336,13 +336,13 @@ export default function CaseDetailPage() {
             )}
 
             {c.status === "resolved" && (
-              <p className="mt-4 text-sm text-slate-500">
+              <p className="mt-4 text-sm text-muted-fg">
                 This case has been resolved.
               </p>
             )}
 
             {(reportMutation.error || resolveMutation.error || cancelMutation.error) && (
-              <p className="mt-3 text-xs text-red-600">
+              <p className="mt-3 text-xs text-red-600 dark:text-red-400">
                 Action failed. Please try again.
               </p>
             )}
@@ -362,8 +362,8 @@ function DetailRow({
 }) {
   return (
     <div className="flex justify-between gap-2">
-      <dt className="text-slate-500">{label}</dt>
-      <dd className="text-right text-slate-900">{value}</dd>
+      <dt className="text-muted-fg">{label}</dt>
+      <dd className="text-right text-fg">{value}</dd>
     </div>
   );
 }
@@ -411,14 +411,14 @@ function CaseImage({
 
   if (error) {
     return (
-      <div className="flex aspect-video items-center justify-center rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+      <div className="flex aspect-video items-center justify-center rounded-md border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/40 p-3 text-xs text-red-700 dark:text-red-300">
         {error}
       </div>
     );
   }
   if (!src) {
     return (
-      <div className="flex aspect-video items-center justify-center rounded-md bg-slate-100 text-xs text-slate-400">
+      <div className="flex aspect-video items-center justify-center rounded-md bg-muted text-xs text-muted-fg">
         <Loader2 className="h-4 w-4 animate-spin" />
       </div>
     );
@@ -428,7 +428,7 @@ function CaseImage({
     <img
       src={src}
       alt={`Case evidence #${index + 1} (${mime})`}
-      className="aspect-video w-full rounded-md border border-slate-200 bg-slate-50 object-contain"
+      className="aspect-video w-full rounded-md border border-line bg-app object-contain"
     />
   );
 }

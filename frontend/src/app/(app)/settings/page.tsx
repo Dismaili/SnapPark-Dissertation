@@ -11,7 +11,7 @@ import { CheckCircle2, Loader2, User, Lock, Bell } from "lucide-react";
 // ─── Notification channels (Firebase removed) ─────────────────────────────────
 
 const CHANNELS: {
-  key: "in_app" | "email" | "sms";
+  key: "in_app" | "email";
   label: string;
   description: string;
   addressField?: keyof NotificationPreferences;
@@ -33,15 +33,6 @@ const CHANNELS: {
     addressPlaceholder: "you@example.com",
     addressType: "email",
   },
-  {
-    key: "sms",
-    label: "SMS (Twilio)",
-    description: "Short text messages for the most important updates.",
-    addressField: "phone",
-    addressLabel: "Phone number (E.164)",
-    addressPlaceholder: "+447700900000",
-    addressType: "tel",
-  },
 ];
 
 // ─── Shared components ────────────────────────────────────────────────────────
@@ -56,10 +47,10 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center gap-2 border-b border-slate-100 px-6 py-4">
-        <Icon className="h-4 w-4 text-emerald-600" />
-        <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+    <div className="rounded-lg border border-line bg-card shadow-sm">
+      <div className="flex items-center gap-2 border-b border-line px-6 py-4">
+        <Icon className="h-4 w-4 text-brand" />
+        <h2 className="text-sm font-semibold text-fg">{title}</h2>
       </div>
       <div className="p-6">{children}</div>
     </div>
@@ -69,9 +60,9 @@ function Section({
 function SaveFeedback({ savedAt, error }: { savedAt: number | null; error: string | null }) {
   return (
     <div className="flex items-center justify-end gap-3 pt-2">
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
       {savedAt && !error && (
-        <p className="inline-flex items-center gap-1 text-xs text-emerald-700">
+        <p className="inline-flex items-center gap-1 text-xs text-brand-fg">
           <CheckCircle2 className="h-3.5 w-3.5" /> Saved
         </p>
       )}
@@ -117,40 +108,40 @@ function ProfileSection({ user }: { user: NonNullable<ReturnType<typeof tokenSto
       >
         <div className="grid grid-cols-2 gap-4">
           <label className="block">
-            <span className="text-xs font-medium text-slate-600">First name</span>
+            <span className="text-xs font-medium text-muted-fg">First name</span>
             <input
               type="text"
               value={firstName}
               onChange={(e) => setFirstName(e.target.value)}
-              className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              className="mt-1 block w-full rounded-md border border-line-strong px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
             />
           </label>
           <label className="block">
-            <span className="text-xs font-medium text-slate-600">Last name</span>
+            <span className="text-xs font-medium text-muted-fg">Last name</span>
             <input
               type="text"
               value={lastName}
               onChange={(e) => setLastName(e.target.value)}
-              className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+              className="mt-1 block w-full rounded-md border border-line-strong px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
             />
           </label>
         </div>
         <label className="block">
-          <span className="text-xs font-medium text-slate-600">Email address</span>
+          <span className="text-xs font-medium text-muted-fg">Email address</span>
           <input
             type="email"
             value={user.email}
             disabled
-            className="mt-1 block w-full rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500 cursor-not-allowed"
+            className="mt-1 block w-full rounded-md border border-line bg-app px-3 py-2 text-sm text-muted-fg cursor-not-allowed"
           />
-          <span className="mt-1 block text-xs text-slate-400">Email cannot be changed.</span>
+          <span className="mt-1 block text-xs text-muted-fg">Email cannot be changed.</span>
         </label>
         <div className="flex items-center justify-between pt-1">
           <SaveFeedback savedAt={savedAt} error={error} />
           <button
             type="submit"
             disabled={save.isPending}
-            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
           >
             {save.isPending ? "Saving…" : "Save profile"}
           </button>
@@ -199,13 +190,13 @@ function SecuritySection() {
           const setter = [setCurrent, setNext, setConfirm][i];
           return (
             <label key={label} className="block">
-              <span className="text-xs font-medium text-slate-600">{label}</span>
+              <span className="text-xs font-medium text-muted-fg">{label}</span>
               <input
                 type="password"
                 value={value}
                 onChange={(e) => setter(e.target.value)}
                 required
-                className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                className="mt-1 block w-full rounded-md border border-line-strong px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
               />
             </label>
           );
@@ -215,7 +206,7 @@ function SecuritySection() {
           <button
             type="submit"
             disabled={save.isPending}
-            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+            className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
           >
             {save.isPending ? "Updating…" : "Update password"}
           </button>
@@ -259,7 +250,7 @@ function NotificationsSection({ user }: { user: NonNullable<ReturnType<typeof to
   return (
     <Section icon={Bell} title="Notifications">
       {isLoading || !form ? (
-        <div className="flex items-center gap-2 text-sm text-slate-500">
+        <div className="flex items-center gap-2 text-sm text-muted-fg">
           <Loader2 className="h-4 w-4 animate-spin" /> Loading…
         </div>
       ) : (
@@ -267,11 +258,11 @@ function NotificationsSection({ user }: { user: NonNullable<ReturnType<typeof to
           {CHANNELS.map((ch) => {
             const enabled = form[ch.key] as boolean;
             return (
-              <div key={ch.key} className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+              <div key={ch.key} className="rounded-lg border border-line bg-app p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">{ch.label}</h3>
-                    <p className="mt-0.5 text-xs text-slate-500">{ch.description}</p>
+                    <h3 className="text-sm font-semibold text-fg">{ch.label}</h3>
+                    <p className="mt-0.5 text-xs text-muted-fg">{ch.description}</p>
                   </div>
                   <label className="relative inline-flex cursor-pointer items-center">
                     <input
@@ -280,18 +271,18 @@ function NotificationsSection({ user }: { user: NonNullable<ReturnType<typeof to
                       checked={enabled}
                       onChange={(e) => setForm({ ...form, [ch.key]: e.target.checked })}
                     />
-                    <div className="h-6 w-11 rounded-full bg-slate-200 after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition-all peer-checked:bg-emerald-600 peer-checked:after:translate-x-5" />
+                    <div className="h-6 w-11 rounded-full bg-muted after:absolute after:left-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-card after:shadow after:transition-all peer-checked:bg-brand peer-checked:after:translate-x-5" />
                   </label>
                 </div>
                 {ch.addressField && enabled && (
                   <div className="mt-3">
-                    <label className="block text-xs font-medium text-slate-600">{ch.addressLabel}</label>
+                    <label className="block text-xs font-medium text-muted-fg">{ch.addressLabel}</label>
                     <input
                       type={ch.addressType}
                       placeholder={ch.addressPlaceholder}
                       value={(form[ch.addressField] as string) || ""}
                       onChange={(e) => setForm({ ...form, [ch.addressField as string]: e.target.value })}
-                      className="mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                      className="mt-1 block w-full rounded-md border border-line-strong px-3 py-2 text-sm shadow-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
                     />
                   </div>
                 )}
@@ -303,7 +294,7 @@ function NotificationsSection({ user }: { user: NonNullable<ReturnType<typeof to
             <button
               type="submit"
               disabled={save.isPending}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+              className="rounded-md bg-brand px-4 py-2 text-sm font-medium text-white hover:bg-brand-hover disabled:opacity-60"
             >
               {save.isPending ? "Saving…" : "Save preferences"}
             </button>

@@ -90,27 +90,27 @@ function VerifyOtpInner() {
         <OtpInput value={code} onChange={setCode} length={OTP_LENGTH} disabled={submitting} />
 
         {error && (
-          <p className="rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>
+          <p className="rounded-md bg-red-50 dark:bg-red-950/40 p-3 text-sm text-red-700 dark:text-red-300">{error}</p>
         )}
         {info && (
-          <p className="rounded-md bg-emerald-50 p-3 text-sm text-emerald-700">{info}</p>
+          <p className="rounded-md bg-brand-subtle p-3 text-sm text-brand-fg">{info}</p>
         )}
 
         <button
           type="submit"
           disabled={submitting || code.length !== OTP_LENGTH}
-          className="w-full rounded-md bg-emerald-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="w-full rounded-md bg-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-60"
         >
           {submitting ? "Verifying…" : "Verify and continue"}
         </button>
 
-        <p className="text-center text-sm text-slate-600">
+        <p className="text-center text-sm text-muted-fg">
           Didn&apos;t receive a code?{" "}
           <button
             type="button"
             onClick={onResend}
             disabled={resending}
-            className="font-medium text-emerald-600 hover:text-emerald-700 disabled:opacity-60"
+            className="font-medium text-brand hover:text-brand-fg disabled:opacity-60"
           >
             {resending ? "Sending…" : "Resend"}
           </button>
