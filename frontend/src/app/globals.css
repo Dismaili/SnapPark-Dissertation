@@ -1,0 +1,54 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── Light theme (default) ───────────────────────────────────────────── */
+  :root {
+    --app: 248 250 252; /* slate-50  — page background        */
+    --card: 255 255 255; /* white     — cards, nav, bars       */
+    --muted: 241 245 249; /* slate-100 — subtle inset fills     */
+    --muted-fg: 100 116 139; /* slate-500 — secondary / hint text  */
+    --fg: 15 23 42; /* slate-900 — primary text           */
+    --fg-soft: 51 65 85; /* slate-700 — strong secondary text  */
+    --line: 226 232 240; /* slate-200 — borders / dividers     */
+    --line-strong: 203 213 225; /* slate-300 — input borders          */
+    --brand: 5 150 105; /* emerald-600 — primary actions      */
+    --brand-hover: 4 120 87; /* emerald-700 — hover                */
+    --brand-fg: 4 120 87; /* emerald-700 — brand text on subtle */
+    --brand-subtle: 236 253 245; /* emerald-50 — brand tinted fills    */
+  }
+
+  /* ── Dark theme ──────────────────────────────────────────────────────── */
+  .dark {
+    --app: 2 6 23; /* slate-950 — darkest (page)         */
+    --card: 15 23 42; /* slate-900 — cards (raised)         */
+    --muted: 30 41 59; /* slate-800 — inset fills            */
+    --muted-fg: 148 163 184; /* slate-400 — secondary text         */
+    --fg: 226 232 240; /* slate-200 — primary text           */
+    --fg-soft: 203 213 225; /* slate-300 — strong secondary text  */
+    --line: 40 52 73; /* between 800/700 — visible borders  */
+    --line-strong: 51 65 85; /* slate-700 — input borders          */
+    --brand: 59 130 246; /* blue-500 — primary actions         */
+    --brand-hover: 96 165 250; /* blue-400 — hover (lighter)         */
+    --brand-fg: 96 165 250; /* blue-400 — brand text on subtle    */
+    --brand-subtle: 23 37 84; /* blue-950 — brand tinted fills      */
+  }
+
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-app text-fg;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

@@ -12,9 +12,13 @@ export const isValidPassword = (pw) => typeof pw === 'string' && pw.length >= 8;
 
 // ─── Token utilities ─────────────────────────────────────────────────────────
 
-/** Sign a short-lived access token */
+/** Sign a short-lived access token. The role claim drives admin-only routes. */
 export const createAccessToken = (user, secret, expiresIn) =>
-  jwt.sign({ sub: user.id, email: user.email, jti: crypto.randomUUID() }, secret, { expiresIn });
+  jwt.sign(
+    { sub: user.id, email: user.email, role: user.role || 'citizen', jti: crypto.randomUUID() },
+    secret,
+    { expiresIn },
+  );
 
 /** Sign a long-lived refresh token */
 export const createRefreshToken = (user, secret, expiresIn) =>

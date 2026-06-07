@@ -5,11 +5,14 @@ import morgan from 'morgan';
 import multer from 'multer';
 import dotenv from 'dotenv';
 
-import { query, initDB, insertCaseImages, getCaseImages, auditLog, getAuditLog, getAuditLogByUser } from './db.js';
+import { query, initDB, insertCaseImages, getCaseImages, getCaseImageBytes, auditLog, getAuditLog, getAuditLogByUser, findSimilarCases } from './db.js';
 import { connectRabbitMQ, publishCaseCreated, publishCaseReported, publishCaseResolved } from './rabbitmq.js';
 import { analyseImage, analyseMultipleImages } from './gemini.js';
 import { validateImageQuality } from './imageValidator.js';
 import { startCleanupJob } from './cleanup.js';
+import { runCaseCreationSaga } from './saga/caseCreationSaga.js';
+import { getSaga } from './saga/coordinator.js';
+import { startSagaListener } from './saga/listeners.js';
 
 dotenv.config();
 
@@ -75,10 +78,24 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
   try {
     let imageEntries = []; // { buffer, base64, mimeType }
     let userId;
+    let userEmail;       // forwarded to the notification service via the case events
+    let licensePlate;    // optional — captured from the upload form
+    let latitude;        // optional — from map pin drop
+    let longitude;
+    let locationLabel;   // optional — human-readable address from reverse-geocode
+
+    const extractMeta = (body) => {
+      userId       = body.userId;
+      userEmail    = body.email;
+      licensePlate = typeof body.licensePlate === 'string' ? body.licensePlate.trim().toUpperCase() || null : null;
+      latitude     = body.latitude  ? parseFloat(body.latitude)  : null;
+      longitude    = body.longitude ? parseFloat(body.longitude) : null;
+      locationLabel = typeof body.locationLabel === 'string' ? body.locationLabel.trim() || null : null;
+    };
 
     if (req.files && req.files.length > 0) {
       // ── Multipart upload (multiple files) ────────────────────────────────
-      userId = req.body.userId;
+      extractMeta(req.body);
       imageEntries = req.files.map((f) => ({
         buffer:   f.buffer,
         base64:   f.buffer.toString('base64'),
@@ -86,7 +103,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }));
     } else if (req.file) {
       // ── Multipart upload (single file — backward compat) ────────────────
-      userId = req.body.userId;
+      extractMeta(req.body);
       imageEntries = [{
         buffer:   req.file.buffer,
         base64:   req.file.buffer.toString('base64'),
@@ -94,7 +111,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }];
     } else if (req.body.images && Array.isArray(req.body.images)) {
       // ── JSON body (multiple images) ──────────────────────────────────────
-      userId = req.body.userId;
+      extractMeta(req.body);
       imageEntries = req.body.images.map((img) => ({
         buffer:   Buffer.from(img.image, 'base64'),
         base64:   img.image,
@@ -102,7 +119,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }));
     } else if (req.body.image) {
       // ── JSON body (single image — backward compat) ──────────────────────
-      userId = req.body.userId;
+      extractMeta(req.body);
       imageEntries = [{
         buffer:   Buffer.from(req.body.image, 'base64'),
         base64:   req.body.image,
@@ -157,6 +174,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       }
 
       imageDetails.push({
+        buffer:     img.buffer,
         base64:     img.base64,
         mimeType:   img.mimeType,
         sizeBytes:  approxBytes,
@@ -166,71 +184,44 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
 
     console.log(`[analyze] ${imageDetails.length} image(s) passed quality check`);
 
-    // ── Gemini analysis ─────────────────────────────────────────────────────
-    let analysis;
-    if (imageDetails.length === 1) {
-      analysis = await analyseImage(imageDetails[0].base64, imageDetails[0].mimeType);
-    } else {
-      analysis = await analyseMultipleImages(
-        imageDetails.map((d) => ({ base64: d.base64, mimeType: d.mimeType }))
-      );
+    // ── Saga-orchestrated case creation ─────────────────────────────────────
+    //
+    // The previous version of this handler ran each step (Gemini, INSERT case,
+    // INSERT case_images, audit log, publish event) inline with no
+    // compensation: a failure halfway through left orphaned rows. The saga
+    // coordinator persists state at every transition and runs compensations
+    // in reverse order on failure. See src/saga/caseCreationSaga.js for the
+    // step definitions and src/saga/coordinator.js for the engine.
+
+    let sagaResult;
+    try {
+      sagaResult = await runCaseCreationSaga({
+        analyser: { analyseImage, analyseMultipleImages },
+        context: {
+          userId,
+          userEmail,
+          licensePlate,
+          latitude,
+          longitude,
+          locationLabel,
+          imageDetails,
+        },
+      });
+    } catch (err) {
+      // The coordinator already ran compensations and recorded the
+      // outcome in the sagas table. Surface the saga id so the response
+      // is debuggable (audit_log + sagas table together explain exactly
+      // which step failed and what was rolled back).
+      console.error(`[analyze] Saga failed (sagaId=${err.sagaId}):`, err.message);
+      return res.status(502).json({
+        error:       'Failed to create violation case. The operation was rolled back.',
+        sagaId:      err.sagaId,
+        failedStep:  err.failedStep,
+        compensated: err.compensated,
+      });
     }
 
-    // ── Persist case to database ────────────────────────────────────────────
-    const totalBytes = imageDetails.reduce((sum, d) => sum + d.sizeBytes, 0);
-    const result = await query(
-      `INSERT INTO cases
-         (user_id, status, violation_confirmed, violation_type, confidence, explanation,
-          image_mime_type, image_size_bytes, image_count, completed_at)
-       VALUES ($1, 'completed', $2, $3, $4, $5, $6, $7, $8, NOW())
-       RETURNING *`,
-      [
-        userId,
-        analysis.violationConfirmed,
-        analysis.violationType,
-        analysis.confidence,
-        analysis.explanation,
-        imageDetails[0].mimeType,  // primary image type
-        totalBytes,
-        imageDetails.length,
-      ]
-    );
-    const savedCase = result.rows[0];
-
-    // ── Persist individual image records ─────────────────────────────────
-    await insertCaseImages(
-      savedCase.id,
-      imageDetails.map((d) => ({
-        mimeType:     d.mimeType,
-        sizeBytes:    d.sizeBytes,
-        qualityStats: d.qualityStats,
-      }))
-    );
-
-    // ── Audit log ────────────────────────────────────────────────────────────
-    await auditLog({
-      eventType: 'CaseCreated',
-      caseId:    savedCase.id,
-      userId:    savedCase.user_id,
-      payload: {
-        violationConfirmed: savedCase.violation_confirmed,
-        violationType:      savedCase.violation_type,
-        confidence:         savedCase.confidence,
-        imageCount:         savedCase.image_count,
-      },
-    });
-
-    // ── Publish event ────────────────────────────────────────────────────────
-    publishCaseCreated({
-      id:                 savedCase.id,
-      userId:             savedCase.user_id,
-      violationConfirmed: savedCase.violation_confirmed,
-      violationType:      savedCase.violation_type,
-      confidence:         savedCase.confidence,
-      explanation:        savedCase.explanation,
-      imageCount:         savedCase.image_count,
-      createdAt:          savedCase.created_at,
-    });
+    const { savedCase, analysis } = sagaResult;
 
     return res.status(201).json({
       caseId:     savedCase.id,
@@ -239,6 +230,7 @@ app.post('/violations/analyze', upload.array('images', MAX_IMAGES), async (req, 
       imageCount: savedCase.image_count,
       analysis,
       createdAt:  savedCase.created_at,
+      sagaId:     sagaResult.sagaId,
     });
   } catch (err) {
     console.error('[analyze]', err.message);
@@ -346,6 +338,50 @@ app.get('/violations/stats/:userId', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 /**
+ * GET /violations/:id/images/:index
+ * Stream the raw bytes of a single image attached to a case.
+ *
+ * MUST be declared before the generic `/violations/:id` route below,
+ * otherwise Express's first-match rule swallows it as a case id.
+ *
+ * Ownership is enforced via the X-User-Id header passed by the gateway —
+ * admins (X-User-Role: admin) bypass the check.
+ */
+app.get('/violations/:id/images/:index', async (req, res) => {
+  try {
+    const caseId = req.params.id;
+    const index  = Number(req.params.index);
+    if (!Number.isInteger(index) || index < 0) {
+      return res.status(400).json({ error: 'Invalid image index.' });
+    }
+
+    const caseRow = await query('SELECT user_id FROM cases WHERE id = $1', [caseId]);
+    if (caseRow.rows.length === 0) {
+      return res.status(404).json({ error: 'Case not found.' });
+    }
+
+    const requestingUser = req.headers['x-user-id'];
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.rows[0].user_id !== requestingUser) {
+      return res.status(403).json({ error: 'You do not have access to this case.' });
+    }
+
+    const row = await getCaseImageBytes(caseId, index);
+    if (!row || !row.image_data) {
+      return res.status(404).json({ error: 'Image not found.' });
+    }
+
+    res.setHeader('Content-Type', row.image_mime_type || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return res.status(200).send(row.image_data);
+  } catch (err) {
+    console.error('[violations/:id/images/:index]', err.message);
+    return res.status(500).json({ error: 'Failed to retrieve image.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+/**
  * GET /violations/:id
  * Returns a single case by UUID, including its images.
  *
@@ -363,7 +399,8 @@ app.get('/violations/:id', async (req, res) => {
 
     // Ownership check — the gateway passes X-User-Id from the JWT
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -397,7 +434,8 @@ app.get('/violations/:id/status', async (req, res) => {
     const caseRow = result.rows[0];
 
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -428,7 +466,8 @@ app.patch('/violations/:id/report', async (req, res) => {
 
     // Ownership check
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -474,6 +513,7 @@ app.patch('/violations/:id/report', async (req, res) => {
       violationType:      updatedCase.violation_type,
       confidence:         updatedCase.confidence,
       explanation:        updatedCase.explanation,
+      licensePlate:       updatedCase.license_plate,
       reportedAt:         updatedCase.reported_at,
     });
 
@@ -533,6 +573,7 @@ app.patch('/violations/:id/resolve', async (req, res) => {
       userId:             updatedCase.user_id,
       violationConfirmed: updatedCase.violation_confirmed,
       violationType:      updatedCase.violation_type,
+      licensePlate:       updatedCase.license_plate,
       resolvedAt:         updatedCase.resolved_at,
     });
 
@@ -564,7 +605,8 @@ app.delete('/violations/:id', async (req, res) => {
 
     // Ownership check
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && caseRow.user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -615,7 +657,8 @@ app.get('/violations/:id/audit', async (req, res) => {
     }
 
     const requestingUser = req.headers['x-user-id'];
-    if (requestingUser && result.rows[0].user_id !== requestingUser) {
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && result.rows[0].user_id !== requestingUser) {
       return res.status(403).json({ error: 'You do not have access to this case.' });
     }
 
@@ -624,6 +667,79 @@ app.get('/violations/:id/audit', async (req, res) => {
   } catch (err) {
     console.error('[audit]', err.message);
     return res.status(500).json({ error: 'Failed to retrieve audit log.' });
+  }
+});
+
+/**
+ * GET /violations/:id/similar?limit=5
+ *
+ * Returns the cases most semantically similar to the given case, using
+ * pgvector cosine distance over the AI-verdict embedding stored on
+ * each row. The source case is excluded from results.
+ *
+ * The `distance` value is the raw cosine distance from pgvector
+ * (0 = identical, 2 = opposite). The frontend converts it to a
+ * 0–100 similarity score for display.
+ */
+app.get('/violations/:id/similar', async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 25);
+
+    // Confirm the case exists and the caller is allowed to see it. We
+    // use the same ownership rules as the case-detail route — citizens
+    // can only query similars for their own case; admins can query any.
+    const result = await query('SELECT id, user_id, embedding FROM cases WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Case not found.' });
+    }
+    const caseRow        = result.rows[0];
+    const requestingUser = req.headers['x-user-id'];
+    const requestingRole = req.headers['x-user-role'];
+    if (requestingUser && requestingRole !== 'admin' && caseRow.user_id !== requestingUser) {
+      return res.status(403).json({ error: 'You do not have access to this case.' });
+    }
+
+    // The case may not have an embedding yet (e.g. created before the
+    // embedding column existed, or analysis returned no usable text).
+    // Surface that explicitly so the frontend can show "no comparable
+    // cases yet" rather than a misleading empty list.
+    if (!caseRow.embedding) {
+      return res.status(200).json({
+        caseId:    req.params.id,
+        results:   [],
+        embedded:  false,
+        reason:    'This case has no embedding — semantic similarity not available.',
+      });
+    }
+
+    const results = await findSimilarCases(req.params.id, limit);
+    return res.status(200).json({
+      caseId:   req.params.id,
+      results,
+      embedded: true,
+      count:    results.length,
+    });
+  } catch (err) {
+    console.error('[violations/:id/similar]', err.message);
+    return res.status(500).json({ error: 'Failed to fetch similar cases.' });
+  }
+});
+
+/**
+ * GET /sagas/:id
+ * Inspect the full state of a saga — current status, the per-step
+ * history (start / succeed / fail / compensate), and any external events
+ * that arrived later (e.g. notification.failed). Surfaced primarily as
+ * dissertation evidence; also useful for debugging in development.
+ */
+app.get('/sagas/:id', async (req, res) => {
+  try {
+    const saga = await getSaga(req.params.id);
+    if (!saga) return res.status(404).json({ error: 'Saga not found.' });
+    return res.status(200).json(saga);
+  } catch (err) {
+    console.error('[sagas/:id]', err.message);
+    return res.status(500).json({ error: 'Failed to fetch saga.' });
   }
 });
 
@@ -662,6 +778,10 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ error: 'Internal server error.' });
 });
 
+// ─── Export for testing ──────────────────────────────────────────────────────
+
+export { app };
+
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 const start = async () => {
@@ -670,17 +790,24 @@ const start = async () => {
   // Start the auto-cleanup job for stale pending cases (FR7)
   startCleanupJob();
 
-  // RabbitMQ connection is non-blocking — service starts even if broker is down
-  connectRabbitMQ().catch((err) => {
-    console.warn('[RabbitMQ] Background connect failed:', err.message);
-  });
+  // RabbitMQ connection is non-blocking — service starts even if broker is down.
+  // The saga listener is started after the channel is up so it can subscribe
+  // to notification.failed events; if RabbitMQ never connects, distributed
+  // compensation is logged-and-skipped (the in-process saga still works).
+  connectRabbitMQ()
+    .then(() => startSagaListener().catch((err) =>
+      console.warn('[saga] Listener failed to start:', err.message)
+    ))
+    .catch((err) => console.warn('[RabbitMQ] Background connect failed:', err.message));
 
   app.listen(PORT, () => {
     console.log(`[violation-analysis-service] Listening on port ${PORT}`);
   });
 };
 
-start().catch((err) => {
-  console.error('[violation-analysis-service] Failed to start:', err.message);
-  process.exit(1);
-});
+if (process.argv[1]?.includes('index.js')) {
+  start().catch((err) => {
+    console.error('[violation-analysis-service] Failed to start:', err.message);
+    process.exit(1);
+  });
+}

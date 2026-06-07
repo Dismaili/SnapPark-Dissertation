@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: snappark-config
+  namespace: snappark
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+
+  # Database hosts (internal Kubernetes service DNS)
+  AUTH_DB_HOST: "postgres-auth"
+  AUTH_DB_PORT: "5432"
+  AUTH_DB_NAME: "snappark_auth"
+
+  CASE_DB_HOST: "postgres-case"
+  CASE_DB_PORT: "5432"
+  CASE_DB_NAME: "snappark_case"
+
+  NOTIFICATIONS_DB_HOST: "postgres-notifications"
+  NOTIFICATIONS_DB_PORT: "5432"
+  NOTIFICATIONS_DB_NAME: "snappark_notifications"
+
+  # Message broker
+  MESSAGE_BROKER_URL: "amqp://guest:guest@rabbitmq:5672"
+
+  # Internal service URLs (used by API gateway)
+  AUTH_SERVICE_URL: "http://authentication-service:3001"
+  VIOLATION_SERVICE_URL: "http://violation-analysis-service:3002"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:3004"
+
+  # API gateway config
+  RATE_LIMIT_WINDOW: "15m"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+
+  # Authentication config
+  TOKEN_EXPIRY: "15m"
+  REFRESH_TOKEN_EXPIRY: "7d"
+  PASSWORD_SALT_ROUNDS: "10"
+
+  # Violation analysis config
+  CLEANUP_INTERVAL_MS: "3600000"
+  EXPIRY_THRESHOLD_HOURS: "24"
+  MIN_IMAGE_WIDTH: "200"
+  MIN_IMAGE_HEIGHT: "200"
+  MIN_BRIGHTNESS: "30"
+  MAX_BRIGHTNESS: "245"
+  BLUR_THRESHOLD: "100"
+
+  # Notification / SMTP defaults
+  SMTP_PORT: "587"
+  SMTP_FROM: "noreply@snappark.app"

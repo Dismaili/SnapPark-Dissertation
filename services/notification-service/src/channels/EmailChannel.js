@@ -11,7 +11,7 @@ export class EmailChannel extends BaseChannel {
   constructor() {
     super('email');
 
-    this.from = process.env.SMTP_FROM || 'noreply@snappark.app';
+    this.from = process.env.SMTP_FROM || 'snapparkillegalparking@gmail.com';
 
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -62,6 +62,11 @@ export class EmailChannel extends BaseChannel {
             <td style="padding: 8px 16px; font-weight: bold;">Type</td>
             <td style="padding: 8px 16px;">${metadata?.violationType || 'N/A'}</td>
           </tr>
+          ${metadata?.licensePlate ? `
+          <tr>
+            <td style="padding: 8px 16px; font-weight: bold;">License Plate</td>
+            <td style="padding: 8px 16px;">${metadata.licensePlate}</td>
+          </tr>` : ''}
           <tr>
             <td style="padding: 8px 16px; font-weight: bold;">Confidence</td>
             <td style="padding: 8px 16px;">${confidence}</td>

@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violation-analysis-service
+  namespace: snappark
+  labels:
+    app: violation-analysis-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: violation-analysis-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: violation-analysis-service
+    spec:
+      containers:
+        - name: violation-analysis-service
+          image: snappark/violation-analysis-service:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3002
+              name: http
+          env:
+            - name: PORT
+              value: "3002"
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: NODE_ENV
+            - name: DATABASE_URL
+              value: "postgresql://$(DB_USER):$(DB_PASSWORD)@postgres-case:5432/snappark_case"
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: snappark-secrets
+                  key: DB_USER
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: snappark-secrets
+                  key: DB_PASSWORD
+            - name: MESSAGE_BROKER_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: MESSAGE_BROKER_URL
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: snappark-secrets
+                  key: GEMINI_API_KEY
+            - name: CLEANUP_INTERVAL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: CLEANUP_INTERVAL_MS
+            - name: EXPIRY_THRESHOLD_HOURS
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: EXPIRY_THRESHOLD_HOURS
+            - name: MIN_IMAGE_WIDTH
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: MIN_IMAGE_WIDTH
+            - name: MIN_IMAGE_HEIGHT
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: MIN_IMAGE_HEIGHT
+            - name: MIN_BRIGHTNESS
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: MIN_BRIGHTNESS
+            - name: MAX_BRIGHTNESS
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: MAX_BRIGHTNESS
+            - name: BLUR_THRESHOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: snappark-config
+                  key: BLUR_THRESHOLD
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3002
+            initialDelaySeconds: 45
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: violation-analysis-service
+  namespace: snappark
+  labels:
+    app: violation-analysis-service
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3002
+      targetPort: 3002
+      name: http
+  selector:
+    app: violation-analysis-service
